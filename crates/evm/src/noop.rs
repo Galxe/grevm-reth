@@ -9,7 +9,7 @@ use reth_prune_types::PruneModes;
 use reth_storage_errors::provider::ProviderError;
 use revm_primitives::db::Database;
 
-use crate::execute::{BatchExecutor, BlockExecutorProvider, Executor};
+use crate::execute::{BatchExecutor, BlockExecutorProvider, Executor, ParallelDatabase};
 
 const UNAVAILABLE_FOR_NOOP: &str = "execution unavailable for noop";
 
@@ -23,6 +23,9 @@ impl BlockExecutorProvider for NoopBlockExecutorProvider {
 
     type BatchExecutor<DB: Database<Error: Into<ProviderError> + Display>> = Self;
 
+    type ParallelExecutor<DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>> =
+        Self;
+
     fn executor<DB>(&self, _: DB) -> Self::Executor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
@@ -33,6 +36,13 @@ impl BlockExecutorProvider for NoopBlockExecutorProvider {
     fn batch_executor<DB>(&self, _: DB) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
+    {
+        Self
+    }
+
+    fn parallel_executor<DB>(&self, _: DB) -> Self::ParallelExecutor<DB>
+    where
+        DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>,
     {
         Self
     }

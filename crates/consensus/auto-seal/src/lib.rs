@@ -370,13 +370,13 @@ impl StorageInner {
 
         trace!(target: "consensus::auto", transactions=?&block.body, "executing transactions");
 
-        let mut db = StateProviderDatabase::new(
+        let db = Arc::new(StateProviderDatabase::new(
             provider.latest().map_err(InternalBlockExecutionError::LatestBlock)?,
-        );
+        ));
 
         // execute the block
         let block_execution_output =
-            executor.executor(&mut db).execute((&block, U256::ZERO).into())?;
+            executor.parallel_executor(db.clone()).execute((&block, U256::ZERO).into())?;
         let gas_used = block_execution_output.gas_used;
         let execution_outcome = ExecutionOutcome::from((block_execution_output, block.number));
         let hashed_state = HashedPostState::from_bundle_state(&execution_outcome.state().state);

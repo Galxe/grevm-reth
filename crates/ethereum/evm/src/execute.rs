@@ -2,6 +2,7 @@
 
 use crate::{
     dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
+    parallel_execute::EthGrevmExecutor,
     EthEvmConfig,
 };
 use core::fmt::Display;
@@ -10,7 +11,7 @@ use reth_ethereum_consensus::validate_block_post_execution;
 use reth_evm::{
     execute::{
         BatchExecutor, BlockExecutionError, BlockExecutionInput, BlockExecutionOutput,
-        BlockExecutorProvider, BlockValidationError, Executor, ProviderError,
+        BlockExecutorProvider, BlockValidationError, Executor, ParallelDatabase, ProviderError,
     },
     system_calls::{
         apply_beacon_root_contract_call, apply_blockhashes_contract_call,
@@ -89,6 +90,9 @@ where
     type BatchExecutor<DB: Database<Error: Into<ProviderError> + Display>> =
         EthBatchExecutor<EvmConfig, DB>;
 
+    type ParallelExecutor<DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>> =
+        EthGrevmExecutor<EvmConfig, DB>;
+
     fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
@@ -102,6 +106,13 @@ where
     {
         let executor = self.eth_executor(db);
         EthBatchExecutor { executor, batch_record: BlockBatchRecord::default() }
+    }
+
+    fn parallel_executor<DB>(&self, db: DB) -> Self::ParallelExecutor<DB>
+    where
+        DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>,
+    {
+        EthGrevmExecutor::new(self.chain_spec.clone(), self.evm_config.clone(), db)
     }
 }
 
@@ -175,7 +186,7 @@ where
                     transaction_gas_limit: transaction.gas_limit(),
                     block_available_gas,
                 }
-                .into())
+                .into());
             }
 
             self.evm_config.fill_tx_env(evm.tx_mut(), transaction, *sender);
