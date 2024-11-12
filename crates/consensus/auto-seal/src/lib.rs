@@ -29,7 +29,7 @@ use reth_primitives::{
     TransactionSigned, Withdrawals, B256, U256,
 };
 use reth_provider::{BlockReaderIdExt, StateProviderFactory, StateRootProvider};
-use reth_revm::database::StateProviderDatabase;
+use reth_revm::{database::StateProviderDatabase, db::WrapDatabaseRef};
 use reth_transaction_pool::TransactionPool;
 use reth_trie::HashedPostState;
 use std::{
@@ -46,7 +46,7 @@ mod task;
 
 pub use crate::client::AutoSealClient;
 pub use mode::{FixedBlockTimeMiner, MiningMode, ReadyTransactionMiner};
-use reth_evm::execute::{BlockExecutorProvider, Executor};
+use reth_evm::execute::{BlockExecutorProvider, Executor, ParallelExecutorProvider};
 pub use task::MiningTask;
 
 /// A consensus implementation intended for local development and testing purposes.
@@ -376,7 +376,14 @@ impl StorageInner {
 
         // execute the block
         let block_execution_output =
-            executor.parallel_executor(db.clone()).execute((&block, U256::ZERO).into())?;
+            if let Some(parallel_provider) = executor.try_into_parallel_provider() {
+                parallel_provider.executor(db.clone()).execute((&block, U256::ZERO).into())?
+            } else {
+                executor
+                    .executor(WrapDatabaseRef::from(db.clone()))
+                    .execute((&block, U256::ZERO).into())?
+            };
+
         let gas_used = block_execution_output.gas_used;
         let execution_outcome = ExecutionOutcome::from((block_execution_output, block.number));
         let hashed_state = HashedPostState::from_bundle_state(&execution_outcome.state().state);

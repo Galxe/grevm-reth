@@ -1,8 +1,10 @@
 //! Helpers for testing.
 
-use crate::execute::{
-    BatchExecutor, BlockExecutionInput, BlockExecutionOutput, BlockExecutorProvider, Executor,
-    ParallelDatabase,
+use crate::{
+    execute::{
+        BatchExecutor, BlockExecutionInput, BlockExecutionOutput, BlockExecutorProvider, Executor,
+    },
+    noop::NoopBlockExecutorProvider,
 };
 use parking_lot::Mutex;
 use reth_execution_errors::BlockExecutionError;
@@ -31,8 +33,7 @@ impl BlockExecutorProvider for MockExecutorProvider {
 
     type BatchExecutor<DB: Database<Error: Into<ProviderError> + Display>> = Self;
 
-    type ParallelExecutor<DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>> =
-        Self;
+    type ParallelProvider<'a> = NoopBlockExecutorProvider;
 
     fn executor<DB>(&self, _: DB) -> Self::Executor<DB>
     where
@@ -44,13 +45,6 @@ impl BlockExecutorProvider for MockExecutorProvider {
     fn batch_executor<DB>(&self, _: DB) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
-    {
-        self.clone()
-    }
-
-    fn parallel_executor<DB>(&self, _: DB) -> Self::ParallelExecutor<DB>
-    where
-        DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>,
     {
         self.clone()
     }
