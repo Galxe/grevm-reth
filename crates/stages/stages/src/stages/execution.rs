@@ -334,7 +334,7 @@ where
         let write_preparation_duration = time.elapsed();
 
         // log the gas per second for the range we just executed
-        debug!(
+        info!(
             target: "sync::stages::execution",
             start = start_block,
             end = stage_progress,

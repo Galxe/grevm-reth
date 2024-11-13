@@ -1,9 +1,7 @@
 use crate::{
     dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
     execute::EthExecuteOutput,
-    EthEvmConfig,
 };
-use core::fmt::Display;
 use std::sync::Arc;
 
 use reth_chainspec::{ChainSpec, EthereumHardfork, EthereumHardforks};
@@ -27,21 +25,22 @@ use reth_grevm::{
 use reth_prune_types::PruneModes;
 use reth_revm::{
     batch::BlockBatchRecord, db::states::bundle_state::BundleRetention,
-    state_change::post_block_balance_increments, DatabaseRef, Evm, TransitionState,
+    state_change::post_block_balance_increments, TransitionState,
 };
 
 use reth_primitives::{BlockNumber, BlockWithSenders, Header, Receipt};
 use revm_primitives::{BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, TxEnv, U256};
 
+/// Provides grevm executors to execute regular ethereum blocks
+#[derive(Debug)]
 pub struct GrevmExecutorProvider<'a, EvmConfig> {
     chain_spec: &'a Arc<ChainSpec>,
     evm_config: &'a EvmConfig,
 }
 
 impl<'a, EvmConfig> GrevmExecutorProvider<'a, EvmConfig>
-where
-    EvmConfig: ConfigureEvm,
 {
+    /// Create a new instance of the provider
     pub fn new(chain_spec: &'a Arc<ChainSpec>, evm_config: &'a EvmConfig) -> Self {
         Self { chain_spec, evm_config }
     }
@@ -87,6 +86,7 @@ pub struct GrevmBlockExecutor<EvmConfig, DB> {
 }
 
 impl<EvmConfig, DB> GrevmBlockExecutor<EvmConfig, DB> {
+    /// Create a new instance of the executor
     pub fn new(chain_spec: Arc<ChainSpec>, evm_config: EvmConfig, database: DB) -> Self {
         Self { chain_spec, evm_config, state: Some(Box::default()), database }
     }
@@ -258,23 +258,37 @@ where
         let mut balance_increments =
             post_block_balance_increments(self.chain_spec.as_ref(), block, total_difficulty);
 
-        // // Irregular state change at Ethereum DAO hardfork
-        // if self.chain_spec.as_ref().fork(EthereumHardfork::Dao).transitions_at_block(block.
-        // number) {     // drain balances from hardcoded addresses.
-        //     let drained_balance: u128 = self
-        //         .state
-        //         .drain_balances(DAO_HARDKFORK_ACCOUNTS)
-        //         .map_err(|_| BlockValidationError::IncrementBalanceFailed)?
-        //         .into_iter()
-        //         .sum();
+        let state = self.state.take().unwrap();
+        let mut revm_state = reth_revm::db::states::State::builder()
+            .with_cached_prestate(state.cache)
+            .with_database_ref(self.database.clone())
+            .with_block_hashes(state.block_hashes)
+            .build();
+        revm_state.transition_state = state.transition_state;
 
-        //     // return balance to DAO beneficiary.
-        //     *balance_increments.entry(DAO_HARDFORK_BENEFICIARY).or_default() += drained_balance;
-        // }
-        // // increment balances
-        // self.state.as_mut().unwrap()
-        //     .increment_balances(balance_increments)
-        //     .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
+        // Irregular state change at Ethereum DAO hardfork
+        if self.chain_spec.as_ref().fork(EthereumHardfork::Dao).transitions_at_block(block.number) {
+            // drain balances from hardcoded addresses.
+            let drained_balance: u128 = revm_state
+                .drain_balances(DAO_HARDKFORK_ACCOUNTS)
+                .map_err(|_| BlockValidationError::IncrementBalanceFailed)?
+                .into_iter()
+                .sum();
+
+            // return balance to DAO beneficiary.
+            *balance_increments.entry(DAO_HARDFORK_BENEFICIARY).or_default() += drained_balance;
+        }
+        // increment balances
+        revm_state
+            .increment_balances(balance_increments)
+            .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
+
+        self.state = Some(Box::new(State {
+            cache: revm_state.cache,
+            transition_state: revm_state.transition_state,
+            bundle_state: state.bundle_state,
+            block_hashes: revm_state.block_hashes,
+        }));
 
         Ok(())
     }
