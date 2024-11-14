@@ -199,7 +199,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Block {
 }
 
 /// Sealed block with senders recovered from transactions.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deref, DerefMut)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deref, DerefMut, Serialize, Deserialize)]
 pub struct BlockWithSenders {
     /// Block
     #[deref]

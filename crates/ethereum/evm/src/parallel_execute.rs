@@ -6,6 +6,7 @@ use crate::{
 };
 use std::sync::Arc;
 
+use crate::debug_ext::DEBUG_EXT;
 use reth_chainspec::{ChainSpec, EthereumHardfork, EthereumHardforks};
 use reth_ethereum_consensus::validate_block_post_execution;
 use reth_evm::{
@@ -40,8 +41,7 @@ pub struct GrevmExecutorProvider<'a, EvmConfig> {
     evm_config: &'a EvmConfig,
 }
 
-impl<'a, EvmConfig> GrevmExecutorProvider<'a, EvmConfig>
-{
+impl<'a, EvmConfig> GrevmExecutorProvider<'a, EvmConfig> {
     /// Create a new instance of the provider
     pub fn new(chain_spec: &'a Arc<ChainSpec>, evm_config: &'a EvmConfig) -> Self {
         Self { chain_spec, evm_config }
@@ -152,7 +152,11 @@ where
             txs,
             self.state.take(),
         );
-        let output = executor.parallel_execute().map_err(|e| BlockExecutionError::msg(e))?;
+        let output = if DEBUG_EXT.force_seq_exec {
+            executor.force_sequential_execute().map_err(|e| BlockExecutionError::msg(e))?
+        } else {
+            executor.parallel_execute().map_err(|e| BlockExecutionError::msg(e))?
+        };
         // Take state from grevm scheduler after execution
         self.state = Some(executor.take_state());
         let mut receipts = Vec::with_capacity(output.results.len());
@@ -194,6 +198,24 @@ where
 
         // Apply post execution changes
         self.post_execution(block, total_difficulty)?;
+
+        if !DEBUG_EXT.dump_block_path.is_empty() {
+            let env = self.evm_env_for_block(&block.header, total_difficulty);
+            let mut txs = vec![TxEnv::default(); block.body.len()];
+            for (tx_env, (sender, tx)) in txs.iter_mut().zip(block.transactions_with_sender()) {
+                self.evm_config.fill_tx_env(tx_env, tx, *sender);
+            }
+            let state = self.state.as_ref().unwrap();
+            if let Err(err) = crate::debug_ext::dump_block_data(
+                &env,
+                &txs,
+                &state.cache,
+                state.transition_state.as_ref().unwrap(),
+                &state.block_hashes,
+            ) {
+                eprintln!("Failed to dump block data: {err}");
+            }
+        }
 
         Ok(EthExecuteOutput { receipts, requests, gas_used: cumulative_gas_used })
     }
