@@ -2,7 +2,10 @@
 
 use core::fmt::Display;
 
-use crate::execute::{BatchExecutor, BlockExecutorProvider, Executor, ParallelDatabase};
+use crate::{
+    execute::{BatchExecutor, BlockExecutorProvider, Executor},
+    noop::NoopBlockExecutorProvider,
+};
 use reth_execution_errors::BlockExecutionError;
 use reth_execution_types::{BlockExecutionInput, BlockExecutionOutput, ExecutionOutcome};
 use reth_primitives::{BlockNumber, BlockWithSenders, Receipt};
@@ -24,8 +27,7 @@ where
     type BatchExecutor<DB: Database<Error: Into<ProviderError> + Display>> =
         Either<A::BatchExecutor<DB>, B::BatchExecutor<DB>>;
 
-    type ParallelExecutor<DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>> =
-        Either<A::ParallelExecutor<DB>, B::ParallelExecutor<DB>>;
+    type ParallelProvider<'a> = NoopBlockExecutorProvider;
 
     fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
     where
@@ -44,16 +46,6 @@ where
         match self {
             Self::Left(a) => Either::Left(a.batch_executor(db)),
             Self::Right(b) => Either::Right(b.batch_executor(db)),
-        }
-    }
-
-    fn parallel_executor<DB>(&self, db: DB) -> Self::ParallelExecutor<DB>
-    where
-        DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>,
-    {
-        match self {
-            Self::Left(a) => Either::Left(a.parallel_executor(db)),
-            Self::Right(b) => Either::Right(b.parallel_executor(db)),
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::{
     dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
-    parallel_execute::EthGrevmExecutor,
+    parallel_execute::GrevmExecutorProvider,
     EthEvmConfig,
 };
 use core::fmt::Display;
@@ -11,7 +11,7 @@ use reth_ethereum_consensus::validate_block_post_execution;
 use reth_evm::{
     execute::{
         BatchExecutor, BlockExecutionError, BlockExecutionInput, BlockExecutionOutput,
-        BlockExecutorProvider, BlockValidationError, Executor, ParallelDatabase, ProviderError,
+        BlockExecutorProvider, BlockValidationError, Executor, ProviderError,
     },
     system_calls::{
         apply_beacon_root_contract_call, apply_blockhashes_contract_call,
@@ -90,8 +90,7 @@ where
     type BatchExecutor<DB: Database<Error: Into<ProviderError> + Display>> =
         EthBatchExecutor<EvmConfig, DB>;
 
-    type ParallelExecutor<DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>> =
-        EthGrevmExecutor<EvmConfig, DB>;
+    type ParallelProvider<'a> = GrevmExecutorProvider<'a, EvmConfig>;
 
     fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
     where
@@ -108,20 +107,17 @@ where
         EthBatchExecutor { executor, batch_record: BlockBatchRecord::default() }
     }
 
-    fn parallel_executor<DB>(&self, db: DB) -> Self::ParallelExecutor<DB>
-    where
-        DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>,
-    {
-        EthGrevmExecutor::new(self.chain_spec.clone(), self.evm_config.clone(), db)
+    fn try_into_parallel_provider<'a>(&self) -> Option<Self::ParallelProvider<'_>> {
+        Some(GrevmExecutorProvider::new(&self.chain_spec, &self.evm_config))
     }
 }
 
 /// Helper type for the output of executing a block.
 #[derive(Debug, Clone)]
-struct EthExecuteOutput {
-    receipts: Vec<Receipt>,
-    requests: Vec<Request>,
-    gas_used: u64,
+pub(super) struct EthExecuteOutput {
+    pub receipts: Vec<Receipt>,
+    pub requests: Vec<Request>,
+    pub gas_used: u64,
 }
 
 /// Helper container type for EVM with chain spec.

@@ -5,7 +5,7 @@ pub use reth_execution_errors::{BlockExecutionError, BlockValidationError};
 pub use reth_execution_types::{BlockExecutionInput, BlockExecutionOutput, ExecutionOutcome};
 pub use reth_storage_errors::provider::ProviderError;
 
-use core::fmt::Display;
+use core::{fmt::Display, marker::PhantomData};
 
 use reth_primitives::{BlockNumber, BlockWithSenders, Receipt};
 use reth_prune_types::PruneModes;
@@ -94,10 +94,6 @@ pub trait BatchExecutor<DB> {
     fn size_hint(&self) -> Option<usize>;
 }
 
-pub trait ParallelDatabase: DatabaseRef<Error: Send + Sync + 'static> + Send + Sync {}
-
-impl<T: DatabaseRef<Error: Send + Sync + 'static> + Send + Sync> ParallelDatabase for T {}
-
 /// A type that can create a new executor for block execution.
 pub trait BlockExecutorProvider: Send + Sync + Clone + Unpin + 'static {
     /// An executor that can execute a single block given a database.
@@ -126,12 +122,7 @@ pub trait BlockExecutorProvider: Send + Sync + Clone + Unpin + 'static {
         Error = BlockExecutionError,
     >;
 
-    type ParallelExecutor<DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>>: for<'a> Executor<
-        DB,
-        Input<'a> = BlockExecutionInput<'a, BlockWithSenders>,
-        Output = BlockExecutionOutput<Receipt>,
-        Error = BlockExecutionError,
-    >;
+    type ParallelProvider<'a>: ParallelExecutorProvider;
 
     /// Creates a new executor for single block execution.
     ///
@@ -148,13 +139,113 @@ pub trait BlockExecutorProvider: Send + Sync + Clone + Unpin + 'static {
     where
         DB: Database<Error: Into<ProviderError> + Display>;
 
-    fn parallel_executor<DB>(&self, db: DB) -> Self::ParallelExecutor<DB>
+    fn try_into_parallel_provider<'a>(&self) -> Option<Self::ParallelProvider<'_>> {
+        None
+    }
+}
+
+pub trait ParallelDatabase:
+    DatabaseRef<Error: Send + Sync + 'static + Display + Clone> + Send + Sync + Clone
+{
+}
+
+impl<T: DatabaseRef<Error: Send + Sync + 'static + Display + Clone> + Send + Sync + Clone>
+    ParallelDatabase for T
+{
+}
+
+pub trait ParallelExecutorProvider {
+    type Executor<DB: ParallelDatabase>: for<'a> Executor<
+        DB,
+        Input<'a> = BlockExecutionInput<'a, BlockWithSenders>,
+        Output = BlockExecutionOutput<Receipt>,
+        Error = BlockExecutionError,
+    >;
+
+    type BatchExecutor<DB: ParallelDatabase>: for<'a> BatchExecutor<
+        DB,
+        Input<'a> = BlockExecutionInput<'a, BlockWithSenders>,
+        Output = ExecutionOutcome,
+        Error = BlockExecutionError,
+    >;
+
+    fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
     where
-        DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>;
+        DB: ParallelDatabase;
+
+    fn batch_executor<DB>(&self, db: DB) -> Self::BatchExecutor<DB>
+    where
+        DB: ParallelDatabase;
+}
+
+pub enum EitherBatchExecutor<S, P, DB, PDB> {
+    _Phantom(PhantomData<(DB, PDB)>),
+    Sequential(S),
+    Parallel(P),
+}
+
+impl<S, P, DB, PDB> EitherBatchExecutor<S, P, DB, PDB>
+where
+    S: for<'a> BatchExecutor<
+        DB,
+        Input<'a> = BlockExecutionInput<'a, BlockWithSenders>,
+        Output = ExecutionOutcome,
+        Error = BlockExecutionError,
+    >,
+    P: for<'a> BatchExecutor<
+        PDB,
+        Input<'a> = BlockExecutionInput<'a, BlockWithSenders>,
+        Output = ExecutionOutcome,
+        Error = BlockExecutionError,
+    >,
+    DB: Database<Error: Into<ProviderError> + Display>,
+    PDB: ParallelDatabase,
+{
+    pub fn execute_and_verify_one(&mut self, input: S::Input<'_>) -> Result<(), S::Error> {
+        match self {
+            Self::Sequential(a) => a.execute_and_verify_one(input),
+            Self::Parallel(b) => b.execute_and_verify_one(input),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn finalize(self) -> ExecutionOutcome {
+        match self {
+            Self::Sequential(a) => a.finalize(),
+            Self::Parallel(b) => b.finalize(),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn set_tip(&mut self, tip: BlockNumber) {
+        match self {
+            Self::Sequential(a) => a.set_tip(tip),
+            Self::Parallel(b) => b.set_tip(tip),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn set_prune_modes(&mut self, prune_modes: PruneModes) {
+        match self {
+            Self::Sequential(a) => a.set_prune_modes(prune_modes),
+            Self::Parallel(b) => b.set_prune_modes(prune_modes),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn size_hint(&self) -> Option<usize> {
+        match self {
+            Self::Sequential(a) => a.size_hint(),
+            Self::Parallel(b) => b.size_hint(),
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::noop::NoopBlockExecutorProvider;
+
     use super::*;
     use reth_primitives::Block;
     use revm::db::{CacheDB, EmptyDBTyped};
@@ -167,8 +258,7 @@ mod tests {
     impl BlockExecutorProvider for TestExecutorProvider {
         type Executor<DB: Database<Error: Into<ProviderError> + Display>> = TestExecutor<DB>;
         type BatchExecutor<DB: Database<Error: Into<ProviderError> + Display>> = TestExecutor<DB>;
-        type ParallelExecutor<DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>> =
-            TestExecutor<DB>;
+        type ParallelProvider<'a> = NoopBlockExecutorProvider;
 
         fn executor<DB>(&self, _db: DB) -> Self::Executor<DB>
         where
@@ -180,13 +270,6 @@ mod tests {
         fn batch_executor<DB>(&self, _db: DB) -> Self::BatchExecutor<DB>
         where
             DB: Database<Error: Into<ProviderError> + Display>,
-        {
-            TestExecutor(PhantomData)
-        }
-
-        fn parallel_executor<DB>(&self, _db: DB) -> Self::ParallelExecutor<DB>
-        where
-            DB: ParallelDatabase<Error: Into<ProviderError> + Display + Clone>,
         {
             TestExecutor(PhantomData)
         }
