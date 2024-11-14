@@ -1,3 +1,5 @@
+//! Ethereum block executor using grevm.
+
 use crate::{
     dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
     execute::EthExecuteOutput,
@@ -152,7 +154,7 @@ where
         );
         let output = executor.parallel_execute().map_err(|e| BlockExecutionError::msg(e))?;
         // Take state from grevm scheduler after execution
-        self.state = Some(Arc::try_unwrap(executor.database).map_err(|_| panic!()).unwrap().state);
+        self.state = Some(executor.take_state());
         let mut receipts = Vec::with_capacity(output.results.len());
         let mut cumulative_gas_used = 0;
         for (result, tx_type) in
