@@ -2,6 +2,7 @@
 
 use crate::{
     dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
+    debug_ext::DEBUG_EXT,
     parallel_execute::GrevmExecutorProvider,
     EthEvmConfig,
 };
@@ -30,7 +31,7 @@ use reth_revm::{
 };
 use revm_primitives::{
     db::{Database, DatabaseCommit},
-    BlockEnv, CfgEnvWithHandlerCfg, EVMError, EnvWithHandlerCfg, ResultAndState,
+    BlockEnv, CfgEnvWithHandlerCfg, EVMError, EnvWithHandlerCfg, ResultAndState, TxEnv,
 };
 
 #[cfg(not(feature = "std"))]
@@ -108,7 +109,11 @@ where
     }
 
     fn try_into_parallel_provider<'a>(&self) -> Option<Self::ParallelProvider<'_>> {
-        Some(GrevmExecutorProvider::new(&self.chain_spec, &self.evm_config))
+        if DEBUG_EXT.disable_grevm {
+            None
+        } else {
+            Some(GrevmExecutorProvider::new(&self.chain_spec, &self.evm_config))
+        }
     }
 }
 
@@ -323,6 +328,23 @@ where
 
         // 3. apply post execution changes
         self.post_execution(block, total_difficulty)?;
+
+        if !DEBUG_EXT.dump_block_path.is_empty() {
+            let env = self.evm_env_for_block(&block.header, total_difficulty);
+            let mut txs = vec![TxEnv::default(); block.body.len()];
+            for (tx_env, (sender, tx)) in txs.iter_mut().zip(block.transactions_with_sender()) {
+                self.executor.evm_config.fill_tx_env(tx_env, tx, *sender);
+            }
+            if let Err(err) = crate::debug_ext::dump_block_data(
+                &env,
+                &txs,
+                &self.state.cache,
+                self.state.transition_state.as_ref().unwrap(),
+                &self.state.block_hashes,
+            ) {
+                eprintln!("Failed to dump block data: {err}");
+            }
+        }
 
         Ok(output)
     }
