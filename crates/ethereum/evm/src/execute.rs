@@ -15,7 +15,6 @@ use reth_evm::{
         BlockExecutorProvider, BlockValidationError, Executor, ProviderError,
     },
     system_calls::{
-        apply_beacon_root_contract_call, apply_blockhashes_contract_call,
         apply_consolidation_requests_contract_call, apply_withdrawal_requests_contract_call,
     },
     ConfigureEvm,
@@ -157,24 +156,6 @@ where
         DB: Database,
         DB::Error: Into<ProviderError> + Display,
     {
-        // apply pre execution changes
-        apply_beacon_root_contract_call(
-            &self.evm_config,
-            &self.chain_spec,
-            block.timestamp,
-            block.number,
-            block.parent_beacon_block_root,
-            &mut evm,
-        )?;
-        apply_blockhashes_contract_call(
-            &self.evm_config,
-            &self.chain_spec,
-            block.timestamp,
-            block.number,
-            block.parent_hash,
-            &mut evm,
-        )?;
-
         // execute transactions
         let mut cumulative_gas_used = 0;
         let mut receipts = Vec::with_capacity(block.body.len());
@@ -326,9 +307,6 @@ where
             self.executor.execute_state_transitions(block, evm)
         }?;
 
-        // 3. apply post execution changes
-        self.post_execution(block, total_difficulty)?;
-
         if !DEBUG_EXT.dump_block_path.is_empty() {
             let env = self.evm_env_for_block(&block.header, total_difficulty);
             let mut txs = vec![TxEnv::default(); block.body.len()];
@@ -341,10 +319,14 @@ where
                 &self.state.cache,
                 self.state.transition_state.as_ref().unwrap(),
                 &self.state.block_hashes,
+                Default::default(), // TODO
             ) {
                 eprintln!("Failed to dump block data: {err}");
             }
         }
+
+        // 3. apply post execution changes
+        self.post_execution(block, total_difficulty)?;
 
         Ok(output)
     }
