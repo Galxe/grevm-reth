@@ -138,6 +138,12 @@ where
         let env = self.evm_env_for_block(&block.header, total_difficulty);
         self.pre_execution(block, &env)?;
 
+        let pre_execution_transition_state = if !DEBUG_EXT.dump_block_path.is_empty() {
+            Some(self.state.as_ref().unwrap().transition_state.as_ref().unwrap().clone())
+        } else {
+            None
+        };
+
         // Fill TxEnv from transaction
         let mut txs = vec![TxEnv::default(); block.body.len()];
         for (tx_env, (sender, tx)) in txs.iter_mut().zip(block.transactions_with_sender()) {
@@ -157,8 +163,29 @@ where
         } else {
             executor.parallel_execute().map_err(|e| BlockExecutionError::msg(e))?
         };
+
         // Take state from grevm scheduler after execution
         self.state = Some(executor.take_state());
+
+        if !DEBUG_EXT.dump_block_path.is_empty() {
+            let env = self.evm_env_for_block(&block.header, total_difficulty);
+            let mut txs = vec![TxEnv::default(); block.body.len()];
+            for (tx_env, (sender, tx)) in txs.iter_mut().zip(block.transactions_with_sender()) {
+                self.evm_config.fill_tx_env(tx_env, tx, *sender);
+            }
+            let state = self.state.as_ref().unwrap();
+            if let Err(err) = crate::debug_ext::dump_block_data(
+                &env,
+                &txs,
+                &state.cache,
+                state.transition_state.as_ref().unwrap(),
+                &state.block_hashes,
+                pre_execution_transition_state.unwrap(),
+            ) {
+                eprintln!("Failed to dump block data: {err}");
+            }
+        }
+
         let mut receipts = Vec::with_capacity(output.results.len());
         let mut cumulative_gas_used = 0;
         for (result, tx_type) in
@@ -198,24 +225,6 @@ where
 
         // Apply post execution changes
         self.post_execution(block, total_difficulty)?;
-
-        if !DEBUG_EXT.dump_block_path.is_empty() {
-            let env = self.evm_env_for_block(&block.header, total_difficulty);
-            let mut txs = vec![TxEnv::default(); block.body.len()];
-            for (tx_env, (sender, tx)) in txs.iter_mut().zip(block.transactions_with_sender()) {
-                self.evm_config.fill_tx_env(tx_env, tx, *sender);
-            }
-            let state = self.state.as_ref().unwrap();
-            if let Err(err) = crate::debug_ext::dump_block_data(
-                &env,
-                &txs,
-                &state.cache,
-                state.transition_state.as_ref().unwrap(),
-                &state.block_hashes,
-            ) {
-                eprintln!("Failed to dump block data: {err}");
-            }
-        }
 
         Ok(EthExecuteOutput { receipts, requests, gas_used: cumulative_gas_used })
     }

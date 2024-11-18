@@ -3,14 +3,12 @@
 use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
-    io::{BufWriter, Write},
+    io::BufWriter,
 };
 
 use lazy_static::lazy_static;
 use reth_primitives::{Address, B256};
-use reth_revm::{
-    db::PlainAccount, primitives::AccountInfo, CacheState, TransitionAccount, TransitionState,
-};
+use reth_revm::{db::PlainAccount, CacheState, TransitionState};
 use revm_primitives::{EnvWithHandlerCfg, TxEnv};
 
 #[derive(Debug)]
@@ -36,6 +34,7 @@ pub(crate) fn dump_block_data(
     cache_state: &CacheState,
     transition_state: &TransitionState,
     block_hashes: &BTreeMap<u64, B256>,
+    pre_execution_transition_state: TransitionState,
 ) -> Result<(), Box<dyn Error>> {
     let path = format!("{}/{}", DEBUG_EXT.dump_block_path, env.block.number);
     std::fs::create_dir_all(&path)?;
@@ -48,40 +47,16 @@ pub(crate) fn dump_block_data(
 
     if DEBUG_EXT.dump_transition {
         // Write transition state data to file
-        let sorted: BTreeMap<Address, TransitionAccount> = transition_state
-            .transitions
-            .iter()
-            .map(|(addr, account)| {
-                (
-                    *addr,
-                    TransitionAccount {
-                        info: account.info.as_ref().and_then(|info| {
-                            Some(AccountInfo {
-                                balance: info.balance,
-                                nonce: info.nonce,
-                                code_hash: info.code_hash,
-                                code: None,
-                            })
-                        }),
-                        status: account.status,
-                        previous_info: account.previous_info.as_ref().and_then(|info| {
-                            Some(AccountInfo {
-                                balance: info.balance,
-                                nonce: info.nonce,
-                                code_hash: info.code_hash,
-                                code: None,
-                            })
-                        }),
-                        previous_status: account.previous_status,
-                        storage: account.storage.clone(),
-                        storage_was_destroyed: account.storage_was_destroyed,
-                    },
-                )
-            })
-            .collect();
-
-        BufWriter::new(std::fs::File::create(format!("{path}/transitions"))?)
-            .write(format!("{sorted:?}").as_bytes())?;
+        serde_json::to_writer(
+            BufWriter::new(std::fs::File::create(format!(
+                "{path}/pre_execution_transitions.json"
+            ))?),
+            &pre_execution_transition_state.transitions,
+        )?;
+        serde_json::to_writer(
+            BufWriter::new(std::fs::File::create(format!("{path}/transitions.json"))?),
+            &transition_state.transitions,
+        )?;
     }
 
     // Write pre-state and bytecodes data to file
@@ -89,17 +64,12 @@ pub(crate) fn dump_block_data(
         HashMap::with_capacity(transition_state.transitions.len());
     for (addr, account) in cache_state.accounts.iter() {
         if let Some(transition_account) = transition_state.transitions.get(addr) {
+            // account has been modified by execution, use previous info
             if let Some(info) = transition_account.previous_info.as_ref() {
-                // account has been modified, use previous info
                 pre_state.insert(
                     *addr,
                     PlainAccount {
-                        info: AccountInfo {
-                            balance: info.balance,
-                            nonce: info.nonce,
-                            code_hash: info.code_hash,
-                            code: None,
-                        },
+                        info: info.clone(),
                         storage: transition_account
                             .storage
                             .iter()
@@ -107,23 +77,30 @@ pub(crate) fn dump_block_data(
                             .collect(),
                     },
                 );
-            } else if let Some(account) = account.account.as_ref() {
-                // account has not been modified, use current info
-                pre_state.insert(
-                    *addr,
-                    PlainAccount {
-                        info: AccountInfo {
-                            balance: account.info.balance,
-                            nonce: account.info.nonce,
-                            code_hash: account.info.code_hash,
-                            code: None,
-                        },
-                        storage: account.storage.clone(),
-                    },
-                );
             }
+        } else if let Some(account) = account.account.as_ref() {
+            // account has not been modified, use current info in cache
+            pre_state.insert(*addr, account.clone());
         }
     }
+
+    for (addr, transition) in pre_execution_transition_state.transitions {
+        if let Some(info) = transition.info {
+            // account has been modified by pre-execution, use present info after pre-execution
+            pre_state.insert(
+                addr,
+                PlainAccount {
+                    info,
+                    storage: transition
+                        .storage
+                        .into_iter()
+                        .map(|(k, v)| (k, v.present_value()))
+                        .collect(),
+                },
+            );
+        }
+    }
+
     serde_json::to_writer(
         BufWriter::new(std::fs::File::create(format!("{path}/pre_state.json"))?),
         &pre_state,
