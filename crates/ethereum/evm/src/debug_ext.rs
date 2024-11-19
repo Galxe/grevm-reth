@@ -19,6 +19,7 @@ pub(crate) struct DebugExtArgs {
     pub dump_transitions: bool,
     pub dump_block_env: bool,
     pub dump_receipts: bool,
+    pub compare_with_seq_exec: bool,
 }
 
 lazy_static! {
@@ -29,6 +30,7 @@ lazy_static! {
         dump_transitions: std::env::var("EVM_DUMP_TRANSITIONS").is_ok(),
         dump_block_env: std::env::var("EVM_BLOCK_ENV").is_ok(),
         dump_receipts: std::env::var("EVM_DUMP_RECEIPTS").is_ok(),
+        compare_with_seq_exec: std::env::var("EVM_COMPARE_WITH_SEQ_EXEC").is_ok(),
     };
 }
 
@@ -38,7 +40,6 @@ pub(crate) fn dump_block_env(
     cache_state: &CacheState,
     transition_state: &TransitionState,
     block_hashes: &BTreeMap<u64, B256>,
-    pre_execution_transition_state: TransitionState,
 ) -> Result<(), Box<dyn Error>> {
     let path = format!("{}/{}", DEBUG_EXT.dump_path, env.block.number);
     std::fs::create_dir_all(&path)?;
@@ -48,20 +49,6 @@ pub(crate) fn dump_block_env(
 
     // Write txs data to file
     serde_json::to_writer(BufWriter::new(std::fs::File::create(format!("{path}/txs.json"))?), txs)?;
-
-    if DEBUG_EXT.dump_transitions {
-        // Write transition state data to file
-        serde_json::to_writer(
-            BufWriter::new(std::fs::File::create(format!(
-                "{path}/pre_execution_transitions.json"
-            ))?),
-            &pre_execution_transition_state.transitions,
-        )?;
-        serde_json::to_writer(
-            BufWriter::new(std::fs::File::create(format!("{path}/transitions.json"))?),
-            &transition_state.transitions,
-        )?;
-    }
 
     // Write pre-state and bytecodes data to file
     let mut pre_state: HashMap<Address, PlainAccount> =
@@ -85,23 +72,6 @@ pub(crate) fn dump_block_env(
         } else if let Some(account) = account.account.as_ref() {
             // account has not been modified, use current info in cache
             pre_state.insert(*addr, account.clone());
-        }
-    }
-
-    for (addr, transition) in pre_execution_transition_state.transitions {
-        if let Some(info) = transition.info {
-            // account has been modified by pre-execution, use present info after pre-execution
-            pre_state.insert(
-                addr,
-                PlainAccount {
-                    info,
-                    storage: transition
-                        .storage
-                        .into_iter()
-                        .map(|(k, v)| (k, v.present_value()))
-                        .collect(),
-                },
-            );
         }
     }
 
@@ -131,6 +101,23 @@ pub(crate) fn dump_receipts(block_number: u64, receipts: &[Receipt]) -> Result<(
     serde_json::to_writer(
         BufWriter::new(std::fs::File::create(format!("{path}/receipts.json"))?),
         receipts,
+    )?;
+
+    Ok(())
+}
+
+pub(crate) fn dump_transitions(
+    block_number: u64,
+    transitions: &TransitionState,
+    filename: &str,
+) -> Result<(), Box<dyn Error>> {
+    let path = format!("{}/{}", DEBUG_EXT.dump_path, block_number);
+    std::fs::create_dir_all(&path)?;
+
+    // Write receipts data to file
+    serde_json::to_writer(
+        BufWriter::new(std::fs::File::create(format!("{path}/{filename}"))?),
+        &transitions.transitions,
     )?;
 
     Ok(())

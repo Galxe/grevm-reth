@@ -138,31 +138,55 @@ where
         let env = self.evm_env_for_block(&block.header, total_difficulty);
         self.pre_execution(block, &env)?;
 
-        let pre_execution_transition_state =
-            if DEBUG_EXT.dump_transitions || DEBUG_EXT.dump_block_env {
-                Some(self.state.as_ref().unwrap().transition_state.as_ref().unwrap().clone())
-            } else {
-                None
-            };
-
         // Fill TxEnv from transaction
         let mut txs = vec![TxEnv::default(); block.body.len()];
         for (tx_env, (sender, tx)) in txs.iter_mut().zip(block.transactions_with_sender()) {
             self.evm_config.fill_tx_env(tx_env, tx, *sender);
         }
 
+        let txs = Arc::new(txs);
         // TODO(gravity): pipeline hints generation
         let mut executor = new_grevm_scheduler(
             env.spec_id(),
             env.env.as_ref().clone(),
             self.database.clone(),
-            txs,
+            txs.clone(),
             self.state.take(),
         );
         let output = if DEBUG_EXT.force_seq_exec {
             executor.force_sequential_execute().map_err(|e| BlockExecutionError::msg(e))?
         } else {
-            executor.parallel_execute().map_err(|e| BlockExecutionError::msg(e))?
+            if DEBUG_EXT.compare_with_seq_exec {
+                let mut seq_executor = new_grevm_scheduler(
+                    env.spec_id(),
+                    env.env.as_ref().clone(),
+                    self.database.clone(),
+                    txs.clone(),
+                    Some(executor.database.state.clone()),
+                );
+                seq_executor.force_sequential_execute().map_err(|e| BlockExecutionError::msg(e))?;
+                let output =
+                    executor.parallel_execute().map_err(|e| BlockExecutionError::msg(e))?;
+                let seq_state = seq_executor.take_state();
+                if seq_state.transition_state != executor.database.state.transition_state {
+                    crate::debug_ext::dump_transitions(
+                        block.number,
+                        seq_state.transition_state.as_ref().unwrap(),
+                        "seq_transitions.json",
+                    )
+                    .unwrap();
+                    crate::debug_ext::dump_transitions(
+                        block.number,
+                        executor.database.state.transition_state.as_ref().unwrap(),
+                        "parallel_transitions.json",
+                    )
+                    .unwrap();
+                    panic!("Transition state mismatch, block number: {}", block.number);
+                }
+                output
+            } else {
+                executor.parallel_execute().map_err(|e| BlockExecutionError::msg(e))?
+            }
         };
 
         // Take state from grevm scheduler after execution
@@ -170,20 +194,25 @@ where
 
         if DEBUG_EXT.dump_block_env {
             let env = self.evm_env_for_block(&block.header, total_difficulty);
-            let mut txs = vec![TxEnv::default(); block.body.len()];
-            for (tx_env, (sender, tx)) in txs.iter_mut().zip(block.transactions_with_sender()) {
-                self.evm_config.fill_tx_env(tx_env, tx, *sender);
-            }
             let state = self.state.as_ref().unwrap();
             if let Err(err) = crate::debug_ext::dump_block_env(
                 &env,
-                &txs,
+                &txs.as_ref(),
                 &state.cache,
                 state.transition_state.as_ref().unwrap(),
                 &state.block_hashes,
-                pre_execution_transition_state.unwrap(),
             ) {
-                eprintln!("Failed to dump block data: {err}");
+                eprintln!("Failed to dump block env: {err}");
+            }
+        }
+
+        if DEBUG_EXT.dump_transitions {
+            if let Err(err) = crate::debug_ext::dump_transitions(
+                block.number,
+                self.state.as_ref().unwrap().transition_state.as_ref().unwrap(),
+                "transitions.json",
+            ) {
+                eprintln!("Failed to dump transitions: {err}");
             }
         }
 

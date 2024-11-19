@@ -319,7 +319,6 @@ where
                 &self.state.cache,
                 self.state.transition_state.as_ref().unwrap(),
                 &self.state.block_hashes,
-                Default::default(), // TODO
             ) {
                 eprintln!("Failed to dump block data: {err}");
             }
