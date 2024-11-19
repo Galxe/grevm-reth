@@ -138,11 +138,12 @@ where
         let env = self.evm_env_for_block(&block.header, total_difficulty);
         self.pre_execution(block, &env)?;
 
-        let pre_execution_transition_state = if !DEBUG_EXT.dump_block_path.is_empty() {
-            Some(self.state.as_ref().unwrap().transition_state.as_ref().unwrap().clone())
-        } else {
-            None
-        };
+        let pre_execution_transition_state =
+            if DEBUG_EXT.dump_transitions || DEBUG_EXT.dump_block_env {
+                Some(self.state.as_ref().unwrap().transition_state.as_ref().unwrap().clone())
+            } else {
+                None
+            };
 
         // Fill TxEnv from transaction
         let mut txs = vec![TxEnv::default(); block.body.len()];
@@ -167,14 +168,14 @@ where
         // Take state from grevm scheduler after execution
         self.state = Some(executor.take_state());
 
-        if !DEBUG_EXT.dump_block_path.is_empty() {
+        if DEBUG_EXT.dump_block_env {
             let env = self.evm_env_for_block(&block.header, total_difficulty);
             let mut txs = vec![TxEnv::default(); block.body.len()];
             for (tx_env, (sender, tx)) in txs.iter_mut().zip(block.transactions_with_sender()) {
                 self.evm_config.fill_tx_env(tx_env, tx, *sender);
             }
             let state = self.state.as_ref().unwrap();
-            if let Err(err) = crate::debug_ext::dump_block_data(
+            if let Err(err) = crate::debug_ext::dump_block_env(
                 &env,
                 &txs,
                 &state.cache,
@@ -199,6 +200,12 @@ where
                 logs: result.into_logs(),
                 ..Default::default()
             });
+        }
+
+        if DEBUG_EXT.dump_receipts {
+            if let Err(err) = crate::debug_ext::dump_receipts(block.number, &receipts) {
+                eprintln!("Failed to dump receipts: {err}");
+            }
         }
 
         let requests = if self.chain_spec.is_prague_active_at_timestamp(block.timestamp) {
@@ -257,6 +264,10 @@ where
         block: &BlockWithSenders,
         env: &EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
+        if !self.chain_spec.is_prague_active_at_timestamp(block.timestamp) {
+            return Ok(())
+        }
+
         let mut db = SchedulerDB::new(self.state.take().unwrap(), self.database.clone());
         let mut evm = self.evm_config.evm_with_env(&mut db, env.clone());
         apply_beacon_root_contract_call(

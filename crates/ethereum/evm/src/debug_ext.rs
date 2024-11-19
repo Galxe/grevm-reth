@@ -7,7 +7,7 @@ use std::{
 };
 
 use lazy_static::lazy_static;
-use reth_primitives::{Address, B256};
+use reth_primitives::{Address, Receipt, B256};
 use reth_revm::{db::PlainAccount, CacheState, TransitionState};
 use revm_primitives::{EnvWithHandlerCfg, TxEnv};
 
@@ -15,20 +15,24 @@ use revm_primitives::{EnvWithHandlerCfg, TxEnv};
 pub(crate) struct DebugExtArgs {
     pub disable_grevm: bool,
     pub force_seq_exec: bool,
-    pub dump_block_path: String,
-    pub dump_transition: bool,
+    pub dump_path: String,
+    pub dump_transitions: bool,
+    pub dump_block_env: bool,
+    pub dump_receipts: bool,
 }
 
 lazy_static! {
     pub(crate) static ref DEBUG_EXT: DebugExtArgs = DebugExtArgs {
         disable_grevm: std::env::var("EVM_DISABLE_GREVM").is_ok(),
         force_seq_exec: std::env::var("EVM_FORCE_SEQ_EXEC").is_ok(),
-        dump_block_path: std::env::var("EVM_DUMP_BLOCK_PATH").unwrap_or_default(),
-        dump_transition: std::env::var("EVM_DUMP_TRANSITION").is_ok(),
+        dump_path: std::env::var("EVM_DUMP_PATH").unwrap_or("data/blocks".to_string()),
+        dump_transitions: std::env::var("EVM_DUMP_TRANSITIONS").is_ok(),
+        dump_block_env: std::env::var("EVM_BLOCK_ENV").is_ok(),
+        dump_receipts: std::env::var("EVM_DUMP_RECEIPTS").is_ok(),
     };
 }
 
-pub(crate) fn dump_block_data(
+pub(crate) fn dump_block_env(
     env: &EnvWithHandlerCfg,
     txs: &[TxEnv],
     cache_state: &CacheState,
@@ -36,7 +40,7 @@ pub(crate) fn dump_block_data(
     block_hashes: &BTreeMap<u64, B256>,
     pre_execution_transition_state: TransitionState,
 ) -> Result<(), Box<dyn Error>> {
-    let path = format!("{}/{}", DEBUG_EXT.dump_block_path, env.block.number);
+    let path = format!("{}/{}", DEBUG_EXT.dump_path, env.block.number);
     std::fs::create_dir_all(&path)?;
 
     // Write env data to file
@@ -45,7 +49,7 @@ pub(crate) fn dump_block_data(
     // Write txs data to file
     serde_json::to_writer(BufWriter::new(std::fs::File::create(format!("{path}/txs.json"))?), txs)?;
 
-    if DEBUG_EXT.dump_transition {
+    if DEBUG_EXT.dump_transitions {
         // Write transition state data to file
         serde_json::to_writer(
             BufWriter::new(std::fs::File::create(format!(
@@ -114,6 +118,19 @@ pub(crate) fn dump_block_data(
     serde_json::to_writer(
         BufWriter::new(std::fs::File::create(format!("{path}/block_hashes.json"))?),
         block_hashes,
+    )?;
+
+    Ok(())
+}
+
+pub(crate) fn dump_receipts(block_number: u64, receipts: &[Receipt]) -> Result<(), Box<dyn Error>> {
+    let path = format!("{}/{}", DEBUG_EXT.dump_path, block_number);
+    std::fs::create_dir_all(&path)?;
+
+    // Write receipts data to file
+    serde_json::to_writer(
+        BufWriter::new(std::fs::File::create(format!("{path}/receipts.json"))?),
+        receipts,
     )?;
 
     Ok(())

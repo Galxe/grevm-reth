@@ -307,13 +307,13 @@ where
             self.executor.execute_state_transitions(block, evm)
         }?;
 
-        if !DEBUG_EXT.dump_block_path.is_empty() {
+        if DEBUG_EXT.dump_block_env {
             let env = self.evm_env_for_block(&block.header, total_difficulty);
             let mut txs = vec![TxEnv::default(); block.body.len()];
             for (tx_env, (sender, tx)) in txs.iter_mut().zip(block.transactions_with_sender()) {
                 self.executor.evm_config.fill_tx_env(tx_env, tx, *sender);
             }
-            if let Err(err) = crate::debug_ext::dump_block_data(
+            if let Err(err) = crate::debug_ext::dump_block_env(
                 &env,
                 &txs,
                 &self.state.cache,
@@ -322,6 +322,12 @@ where
                 Default::default(), // TODO
             ) {
                 eprintln!("Failed to dump block data: {err}");
+            }
+        }
+
+        if DEBUG_EXT.dump_receipts {
+            if let Err(err) = crate::debug_ext::dump_receipts(block.number, &output.receipts) {
+                eprintln!("Failed to dump receipts: {err}");
             }
         }
 
