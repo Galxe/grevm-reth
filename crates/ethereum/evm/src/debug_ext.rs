@@ -53,24 +53,32 @@ pub(crate) fn dump_block_env(
     // Write pre-state and bytecodes data to file
     let mut pre_state: HashMap<Address, PlainAccount> =
         HashMap::with_capacity(transition_state.transitions.len());
+    let mut bytecodes = cache_state.contracts.clone();
     for (addr, account) in cache_state.accounts.iter() {
         if let Some(transition_account) = transition_state.transitions.get(addr) {
             // account has been modified by execution, use previous info
             if let Some(info) = transition_account.previous_info.as_ref() {
-                pre_state.insert(
-                    *addr,
-                    PlainAccount {
-                        info: info.clone(),
-                        storage: transition_account
-                            .storage
-                            .iter()
-                            .map(|(k, v)| (*k, v.original_value()))
-                            .collect(),
-                    },
+                let mut storage = if let Some(account) = account.account.as_ref() {
+                    account.storage.clone()
+                } else {
+                    HashMap::new()
+                };
+                storage.extend(
+                    transition_account.storage.iter().map(|(k, v)| (*k, v.original_value())),
                 );
+
+                let mut info = info.clone();
+                if let Some(code) = info.code.take() {
+                    bytecodes.entry(info.code_hash).or_insert_with(|| code);
+                }
+                pre_state.insert(*addr, PlainAccount { info, storage });
             }
         } else if let Some(account) = account.account.as_ref() {
             // account has not been modified, use current info in cache
+            let mut account = account.clone();
+            if let Some(code) = account.info.code.take() {
+                bytecodes.entry(account.info.code_hash).or_insert_with(|| code);
+            }
             pre_state.insert(*addr, account.clone());
         }
     }
