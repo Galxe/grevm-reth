@@ -181,6 +181,14 @@ where
                         "parallel_transitions.json",
                     )
                     .unwrap();
+                    crate::debug_ext::dump_block_env(
+                        &env,
+                        &txs.as_ref(),
+                        &seq_state.cache,
+                        &seq_state.transition_state.as_ref().unwrap(),
+                        &seq_state.block_hashes,
+                    )
+                    .unwrap();
                     panic!("Transition state mismatch, block number: {}", block.number);
                 }
                 output
@@ -193,7 +201,6 @@ where
         self.state = Some(executor.take_state());
 
         if DEBUG_EXT.dump_block_env {
-            let env = self.evm_env_for_block(&block.header, total_difficulty);
             let state = self.state.as_ref().unwrap();
             if let Err(err) = crate::debug_ext::dump_block_env(
                 &env,
