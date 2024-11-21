@@ -7,7 +7,7 @@ use reth_execution_types::{BlockExecutionInput, BlockExecutionOutput, ExecutionO
 use reth_primitives::{BlockNumber, BlockWithSenders, Receipt};
 use reth_prune_types::PruneModes;
 use reth_storage_errors::provider::ProviderError;
-use revm_primitives::db::{Database, DatabaseRef};
+use revm_primitives::db::Database;
 
 use crate::execute::{
     BatchExecutor, BlockExecutorProvider, Executor, ParallelDatabase, ParallelExecutorProvider,

@@ -184,7 +184,7 @@ where
                         .ok_or_else(|| RpcInvalidTransactionError::FeeCapTooLow)
                         .map_err(Eth::Error::from_eth_err)?;
                     Call::evm_config(&eth_api).fill_tx_env(evm.tx_mut(), &tx, signer);
-                    let ResultAndState { result, state } =
+                    let ResultAndState { result, state, .. } =
                         evm.transact().map_err(Eth::Error::from_evm_err)?;
 
                     let gas_used = result.gas_used();
