@@ -304,7 +304,7 @@ where
         Bytes::new(),
     );
 
-    let ResultAndState { result, mut state } = match evm.transact() {
+    let ResultAndState { result, mut state, .. } = match evm.transact() {
         Ok(res) => res,
         Err(e) => {
             evm.context.evm.env = previous_env;
@@ -435,7 +435,7 @@ where
         Bytes::new(),
     );
 
-    let ResultAndState { result, mut state } = match evm.transact() {
+    let ResultAndState { result, mut state, .. } = match evm.transact() {
         Ok(res) => res,
         Err(e) => {
             evm.context.evm.env = previous_env;

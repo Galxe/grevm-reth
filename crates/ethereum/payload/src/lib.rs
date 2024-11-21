@@ -382,7 +382,7 @@ where
         // Configure the environment for the block.
         let mut evm = evm_config.evm_with_env(&mut db, env);
 
-        let ResultAndState { result, state } = match evm.transact() {
+        let ResultAndState { result, state, .. } = match evm.transact() {
             Ok(res) => res,
             Err(err) => {
                 match err {

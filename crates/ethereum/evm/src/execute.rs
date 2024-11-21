@@ -174,7 +174,7 @@ where
             self.evm_config.fill_tx_env(evm.tx_mut(), transaction, *sender);
 
             // Execute transaction.
-            let ResultAndState { result, state } = evm.transact().map_err(move |err| {
+            let ResultAndState { result, state, .. } = evm.transact().map_err(move |err| {
                 let new_err = match err {
                     EVMError::Transaction(e) => EVMError::Transaction(e),
                     EVMError::Header(e) => EVMError::Header(e),
