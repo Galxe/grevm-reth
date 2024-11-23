@@ -9,7 +9,7 @@ use std::{
 use lazy_static::lazy_static;
 use reth_primitives::{Address, Receipt, B256};
 use reth_revm::{db::PlainAccount, CacheState, TransitionState};
-use revm_primitives::{EnvWithHandlerCfg, TxEnv};
+use revm_primitives::{hex, EnvWithHandlerCfg, TxEnv};
 
 #[derive(Debug)]
 pub(crate) struct DebugExtArgs {
@@ -89,7 +89,7 @@ pub(crate) fn dump_block_env(
     )?;
     bincode::serialize_into(
         BufWriter::new(std::fs::File::create(format!("{path}/bytecodes.bincode"))?),
-        &cache_state.contracts,
+        &bytecodes,
     )?;
 
     // Write block hashes to file
