@@ -1,9 +1,12 @@
+//! Ethereum block executor using grevm.
+
 use crate::{
     dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
     execute::EthExecuteOutput,
 };
 use std::sync::Arc;
 
+use crate::debug_ext::DEBUG_EXT;
 use reth_chainspec::{ChainSpec, EthereumHardfork, EthereumHardforks};
 use reth_ethereum_consensus::validate_block_post_execution;
 use reth_evm::{
@@ -38,8 +41,7 @@ pub struct GrevmExecutorProvider<'a, EvmConfig> {
     evm_config: &'a EvmConfig,
 }
 
-impl<'a, EvmConfig> GrevmExecutorProvider<'a, EvmConfig>
-{
+impl<'a, EvmConfig> GrevmExecutorProvider<'a, EvmConfig> {
     /// Create a new instance of the provider
     pub fn new(chain_spec: &'a Arc<ChainSpec>, evm_config: &'a EvmConfig) -> Self {
         Self { chain_spec, evm_config }
@@ -142,17 +144,85 @@ where
             self.evm_config.fill_tx_env(tx_env, tx, *sender);
         }
 
+        let txs = Arc::new(txs);
         // TODO(gravity): pipeline hints generation
         let mut executor = new_grevm_scheduler(
             env.spec_id(),
             env.env.as_ref().clone(),
             self.database.clone(),
-            txs,
+            txs.clone(),
             self.state.take(),
         );
-        let output = executor.parallel_execute().map_err(|e| BlockExecutionError::msg(e))?;
+        let output = if DEBUG_EXT.force_seq_exec {
+            executor.force_sequential_execute().map_err(|e| BlockExecutionError::msg(e))?
+        } else {
+            if DEBUG_EXT.compare_with_seq_exec {
+                let mut seq_executor = new_grevm_scheduler(
+                    env.spec_id(),
+                    env.env.as_ref().clone(),
+                    self.database.clone(),
+                    txs.clone(),
+                    Some(executor.database.state.clone()),
+                );
+                seq_executor.force_sequential_execute().map_err(|e| BlockExecutionError::msg(e))?;
+                let output =
+                    executor.parallel_execute().map_err(|e| BlockExecutionError::msg(e))?;
+                let seq_state = seq_executor.take_state();
+                if seq_state.transition_state != executor.database.state.transition_state {
+                    crate::debug_ext::dump_transitions(
+                        block.number,
+                        seq_state.transition_state.as_ref().unwrap(),
+                        "seq_transitions.json",
+                    )
+                    .unwrap();
+                    crate::debug_ext::dump_transitions(
+                        block.number,
+                        executor.database.state.transition_state.as_ref().unwrap(),
+                        "parallel_transitions.json",
+                    )
+                    .unwrap();
+                    crate::debug_ext::dump_block_env(
+                        &env,
+                        &txs.as_ref(),
+                        &seq_state.cache,
+                        &seq_state.transition_state.as_ref().unwrap(),
+                        &seq_state.block_hashes,
+                    )
+                    .unwrap();
+                    panic!("Transition state mismatch, block number: {}", block.number);
+                }
+                output
+            } else {
+                executor.parallel_execute().map_err(|e| BlockExecutionError::msg(e))?
+            }
+        };
+
         // Take state from grevm scheduler after execution
-        self.state = Some(Arc::try_unwrap(executor.database).map_err(|_| panic!()).unwrap().state);
+        self.state = Some(executor.take_state());
+
+        if DEBUG_EXT.dump_block_env {
+            let state = self.state.as_ref().unwrap();
+            if let Err(err) = crate::debug_ext::dump_block_env(
+                &env,
+                &txs.as_ref(),
+                &state.cache,
+                state.transition_state.as_ref().unwrap(),
+                &state.block_hashes,
+            ) {
+                eprintln!("Failed to dump block env: {err}");
+            }
+        }
+
+        if DEBUG_EXT.dump_transitions {
+            if let Err(err) = crate::debug_ext::dump_transitions(
+                block.number,
+                self.state.as_ref().unwrap().transition_state.as_ref().unwrap(),
+                "transitions.json",
+            ) {
+                eprintln!("Failed to dump transitions: {err}");
+            }
+        }
+
         let mut receipts = Vec::with_capacity(output.results.len());
         let mut cumulative_gas_used = 0;
         for (result, tx_type) in
@@ -166,6 +236,12 @@ where
                 logs: result.into_logs(),
                 ..Default::default()
             });
+        }
+
+        if DEBUG_EXT.dump_receipts {
+            if let Err(err) = crate::debug_ext::dump_receipts(block.number, &receipts) {
+                eprintln!("Failed to dump receipts: {err}");
+            }
         }
 
         let requests = if self.chain_spec.is_prague_active_at_timestamp(block.timestamp) {
@@ -224,6 +300,10 @@ where
         block: &BlockWithSenders,
         env: &EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
+        if !self.chain_spec.is_prague_active_at_timestamp(block.timestamp) {
+            return Ok(())
+        }
+
         let mut db = SchedulerDB::new(self.state.take().unwrap(), self.database.clone());
         let mut evm = self.evm_config.evm_with_env(&mut db, env.clone());
         apply_beacon_root_contract_call(
