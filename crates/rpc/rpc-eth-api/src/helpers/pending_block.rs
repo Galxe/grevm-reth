@@ -333,7 +333,7 @@ pub trait LoadPendingBlock: EthApiTypes {
 
             let mut evm = revm::Evm::builder().with_env(env).with_db(&mut db).build();
 
-            let ResultAndState { result, state } = match evm.transact() {
+            let ResultAndState { result, state, .. } = match evm.transact() {
                 Ok(res) => res,
                 Err(err) => {
                     match err {

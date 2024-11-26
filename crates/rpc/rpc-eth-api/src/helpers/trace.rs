@@ -342,7 +342,7 @@ pub trait Trace: LoadState {
                     let mut inspector = inspector_setup();
                     let (res, _) =
                         this.inspect(StateCacheDbRefMutWrapper(&mut db), env, &mut inspector)?;
-                    let ResultAndState { result, state } = res;
+                    let ResultAndState { result, state, .. } = res;
                     results.push(f(tx_info, inspector, result, &state, &db)?);
 
                     // need to apply the state changes of this transaction before executing the
