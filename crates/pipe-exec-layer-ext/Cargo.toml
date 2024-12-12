@@ -1,0 +1,18 @@
+[package]
+name = "reth-pipe-exec-layer-ext"
+version.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "pipeline execution layer extension"
+
+[lints]
+workspace = true
+
+[dependencies]
+reth-primitives.workspace = true
+alloy-primitives.workspace = true
+tokio.workspace = true
+once_cell.workspace = true
