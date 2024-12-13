@@ -18,6 +18,7 @@ use reth_payload_builder::{
     PayloadJobGenerator,
 };
 use reth_payload_primitives::{BuiltPayload, PayloadBuilderAttributes};
+use reth_pipe_exec_layer_ext::PIPE_EXEC_LAYER_EXT;
 use reth_primitives::{
     constants::{EMPTY_WITHDRAWALS, RETH_CLIENT_VERSION, SLOT_DURATION},
     proofs, BlockNumberOrTag, SealedBlock, Withdrawals,
@@ -407,17 +408,20 @@ where
 
         // check if the deadline is reached
         if this.deadline.as_mut().poll(cx).is_ready() {
-            trace!(target: "payload_builder", "payload building deadline reached");
+            warn!(target: "payload_builder", "payload building deadline reached");
             return Poll::Ready(Ok(()))
         }
 
-        // check if the interval is reached
-        while this.interval.poll_tick(cx).is_ready() {
-            // start a new job if there is no pending block and we haven't reached the deadline
-            if this.pending_block.is_none() {
-                this.spawn_build_job();
-            }
-        }
+        // ATTN(gravity): Each payload build job should only `spawn_build_job` once, because there
+        // is only 1 ordered block determined by consensus to execute in a payload job.
+        //
+        //// check if the interval is reached
+        //while this.interval.poll_tick(cx).is_ready() {
+        //    // start a new job if there is no pending block and we haven't reached the deadline
+        //    if this.pending_block.is_none() {
+        //        this.spawn_build_job();
+        //    }
+        //}
 
         // poll the pending block
         if let Some(mut fut) = this.pending_block.take() {
@@ -427,6 +431,9 @@ where
                         this.cached_reads = Some(cached_reads);
                         debug!(target: "payload_builder", value = %payload.fees(), "built better payload");
                         this.best_payload = Some(payload);
+                        let _ = PIPE_EXEC_LAYER_EXT.get().and_then(|ext| {
+                            ext.send_ready_to_get_payload(this.config.payload_id())
+                        });
                     }
                     BuildOutcome::Aborted { fees, cached_reads } => {
                         this.cached_reads = Some(cached_reads);
@@ -437,9 +444,11 @@ where
                     }
                 },
                 Poll::Ready(Err(error)) => {
-                    // job failed, but we simply try again next interval
-                    debug!(target: "payload_builder", %error, "payload build attempt failed");
+                    warn!(target: "payload_builder", %error, "payload build attempt failed");
                     this.metrics.inc_failed_payload_builds();
+                    // Return Ready to let the job finish and be removed from
+                    // `PayloadBuilderService.payload_jobs` if error occurs during payload building.
+                    return Poll::Ready(Ok(()));
                 }
                 Poll::Pending => {
                     this.pending_block = Some(fut);

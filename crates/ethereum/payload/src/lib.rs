@@ -14,8 +14,9 @@ use reth_basic_payload_builder::{
     PayloadConfig, WithdrawalsOutcome,
 };
 use reth_chain_state::ExecutedBlock;
-use reth_errors::RethError;
+use reth_errors::{ProviderError, RethError};
 use reth_evm::{
+    execute::{BlockExecutionInput, BlockExecutorProvider, Executor},
     system_calls::{
         post_block_consolidation_requests_contract_call,
         post_block_withdrawal_requests_contract_call, pre_block_beacon_root_contract_call,
@@ -23,19 +24,22 @@ use reth_evm::{
     },
     ConfigureEvm, NextBlockEnvAttributes,
 };
-use reth_evm_ethereum::{eip6110::parse_deposits_from_receipts, EthEvmConfig};
+use reth_evm_ethereum::{
+    eip6110::parse_deposits_from_receipts, execute::EthExecutorProvider, EthEvmConfig,
+};
 use reth_execution_types::ExecutionOutcome;
 use reth_payload_builder::{
     error::PayloadBuilderError, EthBuiltPayload, EthPayloadBuilderAttributes,
 };
 use reth_payload_primitives::PayloadBuilderAttributes;
+use reth_pipe_exec_layer_ext::{ExecutedBlockMeta, PIPE_EXEC_LAYER_EXT};
 use reth_primitives::{
     constants::{eip4844::MAX_DATA_GAS_PER_BLOCK, BEACON_NONCE},
     eip4844::calculate_excess_blob_gas,
     proofs::{self, calculate_requests_root},
     revm_primitives::{BlockEnv, CfgEnvWithHandlerCfg},
-    Block, EthereumHardforks, Header, IntoRecoveredTransaction, Receipt, EMPTY_OMMER_ROOT_HASH,
-    U256,
+    Block, BlockWithSenders, EthereumHardforks, Header, IntoRecoveredTransaction, Receipt,
+    EMPTY_OMMER_ROOT_HASH, U256,
 };
 use reth_provider::StateProviderFactory;
 use reth_revm::database::StateProviderDatabase;
@@ -100,7 +104,8 @@ where
         args: BuildArguments<Pool, Client, EthPayloadBuilderAttributes, EthBuiltPayload>,
     ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError> {
         let (cfg_env, block_env) = self.cfg_and_block_env(&args.config, &args.config.parent_block);
-        default_ethereum_payload(self.evm_config.clone(), args, cfg_env, block_env)
+        //default_ethereum_payload(self.evm_config.clone(), args, cfg_env, block_env)
+        execute_next_ordered_block(self.evm_config.clone(), args, block_env)
     }
 
     fn build_empty_payload(
@@ -108,6 +113,11 @@ where
         client: &Client,
         config: PayloadConfig<Self::Attributes>,
     ) -> Result<EthBuiltPayload, PayloadBuilderError> {
+        panic!(
+            "should not build emtpy payload in pipeline execution layer mod. attributes={:?}",
+            config.attributes
+        );
+
         let args = BuildArguments {
             client,
             config,
@@ -444,6 +454,197 @@ where
 
     // extend the payload with the blob sidecars from the executed txs
     payload.extend_sidecars(blob_sidecars);
+
+    Ok(BuildOutcome::Better { payload, cached_reads })
+}
+
+#[inline]
+pub fn execute_next_ordered_block<EvmConfig, Pool, Client>(
+    evm_config: EvmConfig,
+    args: BuildArguments<Pool, Client, EthPayloadBuilderAttributes, EthBuiltPayload>,
+    initialized_block_env: BlockEnv,
+) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
+where
+    EvmConfig: ConfigureEvm<Header = Header>,
+    Client: StateProviderFactory,
+    Pool: TransactionPool,
+{
+    let BuildArguments { client, mut cached_reads, config, .. } = args;
+    let PayloadConfig { parent_block, extra_data, attributes, chain_spec } = config;
+
+    debug!(target: "execute_next_ordered_block", id=%attributes.id, parent_hash = ?parent_block.hash(), parent_number = parent_block.number, "building new payload");
+
+    let ordered_block = PIPE_EXEC_LAYER_EXT.get().unwrap().pull_ordered_block().unwrap();
+    assert_eq!(ordered_block.parent_hash, parent_block.hash());
+
+    // Fill the block header with the known values
+    let mut block = BlockWithSenders {
+        block: Block {
+            header: Header {
+                parent_hash: parent_block.hash(),
+                ommers_hash: EMPTY_OMMER_ROOT_HASH,
+                beneficiary: initialized_block_env.coinbase,
+                timestamp: attributes.timestamp,
+                mix_hash: attributes.prev_randao,
+                nonce: BEACON_NONCE,
+                base_fee_per_gas: Some(initialized_block_env.basefee.to::<u64>()),
+                number: parent_block.number + 1,
+                gas_limit: initialized_block_env.gas_limit.to::<u64>(),
+                difficulty: U256::ZERO,
+                extra_data,
+                parent_beacon_block_root: attributes.parent_beacon_block_root,
+                ..Default::default()
+            },
+            body: ordered_block.transactions,
+            ..Default::default()
+        },
+        senders: ordered_block.senders,
+    };
+
+    if chain_spec.is_shanghai_active_at_timestamp(attributes.timestamp) {
+        if attributes.withdrawals.is_empty() {
+            let WithdrawalsOutcome { withdrawals, withdrawals_root } = WithdrawalsOutcome::empty();
+            block.header.withdrawals_root = withdrawals_root;
+            block.withdrawals = withdrawals;
+        } else {
+            block.header.withdrawals_root =
+                Some(proofs::calculate_withdrawals_root(&attributes.withdrawals));
+            block.withdrawals = Some(attributes.withdrawals);
+        }
+    }
+
+    let state_provider = loop {
+        let state_provider = client.state_by_block_hash(parent_block.hash());
+        match state_provider {
+            Ok(state_provider) => break state_provider,
+            Err(ProviderError::BlockHashNotFound(_)) => {
+                // if the parent block is not found, we need to wait for it to be available before
+                // we can proceed
+                debug!(target: "payload_builder",
+                    parent_hash=%parent_block.hash(),
+                    "parent block not found, waiting for it to be available"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            // FIXME(nekomoto): handle error
+            Err(err) => {
+                panic!(
+                    "failed to get state provider
+                    (parent_hash={:?}, block_id={:?}): {err}",
+                    parent_block.hash(),
+                    ordered_block.block_id
+                )
+            }
+        }
+    };
+    let state = StateProviderDatabase::new(state_provider);
+    let mut db =
+        State::builder().with_database_ref(cached_reads.as_db(state)).with_bundle_update().build();
+
+    let executor_provider = EthExecutorProvider::new(chain_spec.clone(), evm_config);
+    // FIXME(nekomoto): handle error
+    // TODO(nekomoto): support grevm executor
+    let executor_outcome = executor_provider
+        .executor(&mut db)
+        .execute(BlockExecutionInput {
+            block: &block,
+            total_difficulty: initialized_block_env.difficulty,
+        })
+        .expect(format!("failed to execute block {:?}", ordered_block.block_id).as_str());
+
+    if chain_spec.is_prague_active_at_timestamp(attributes.timestamp) {
+        block.requests = Some(executor_outcome.requests.clone().into());
+        block.header.requests_root = Some(calculate_requests_root(&executor_outcome.requests));
+    }
+
+    let execution_outcome = ExecutionOutcome::new(
+        executor_outcome.state,
+        vec![executor_outcome.receipts.into_iter().map(|r| Some(r)).collect::<Vec<_>>()].into(),
+        block.number,
+        vec![executor_outcome.requests.into()],
+    );
+
+    let receipts_root =
+        execution_outcome.receipts_root_slow(block.number).expect("Number is in range");
+    let logs_bloom = execution_outcome.block_logs_bloom(block.number).expect("Number is in range");
+
+    // calculate the state root
+    let hashed_state = HashedPostState::from_bundle_state(&execution_outcome.state().state);
+    let (state_root, trie_output) = {
+        let state_provider = db.database.0.inner.borrow_mut();
+        // FIXME(nekomoto): handle error
+        state_provider
+            .db
+            .state_root_with_updates(hashed_state.clone())
+            .inspect_err(|err| {
+                warn!(target: "payload_builder",
+                    parent_hash=%parent_block.hash(),
+                    %err,
+                    "failed to calculate state root for empty payload"
+                );
+            })
+            .expect(
+                format!("failed to calculate state root for block {:?}", ordered_block.block_id)
+                    .as_str(),
+            )
+    };
+
+    let transactions_root = proofs::calculate_transaction_root(&block.body);
+
+    // only determine cancun fields when active
+    if chain_spec.is_cancun_active_at_timestamp(attributes.timestamp) {
+        let mut blob_gas_used: u64 = 0;
+        for tx in &block.body {
+            if let Some(blob_tx) = tx.transaction.as_eip4844() {
+                blob_gas_used += blob_tx.blob_gas();
+            }
+        }
+        block.header.blob_gas_used = Some(blob_gas_used);
+
+        block.header.excess_blob_gas =
+            if chain_spec.is_cancun_active_at_timestamp(parent_block.timestamp) {
+                let parent_excess_blob_gas = parent_block.excess_blob_gas.unwrap_or_default();
+                let parent_blob_gas_used = parent_block.blob_gas_used.unwrap_or_default();
+                Some(calculate_excess_blob_gas(parent_excess_blob_gas, parent_blob_gas_used))
+            } else {
+                // for the first post-fork block, both parent.blob_gas_used and
+                // parent.excess_blob_gas are evaluated as 0
+                Some(calculate_excess_blob_gas(0, 0))
+            }
+    }
+
+    // Fill the block header with the calculated values
+    block.header.state_root = state_root;
+    block.header.transactions_root = transactions_root;
+    block.header.receipts_root = receipts_root;
+    block.header.logs_bloom = logs_bloom;
+    block.header.gas_used = executor_outcome.gas_used;
+
+    let sealed_block = block.block.seal_slow();
+    debug!(target: "execute_next_ordered_block", ?sealed_block, "sealed built block");
+    PIPE_EXEC_LAYER_EXT
+        .get()
+        .unwrap()
+        .push_executed_block_hash(ExecutedBlockMeta {
+            payload_id: attributes.id,
+            block_id: ordered_block.block_id,
+            block_hash: sealed_block.hash(),
+        })
+        .unwrap();
+
+    // create the executed block data
+    let executed = ExecutedBlock {
+        block: Arc::new(sealed_block.clone()),
+        senders: Arc::new(block.senders),
+        execution_output: Arc::new(execution_outcome),
+        hashed_state: Arc::new(hashed_state),
+        trie: Arc::new(trie_output),
+    };
+
+    // `fees` can be dummy in pipeline execution layer extension, as it's no longer to select the
+    // best payload through `fees` here.
+    let payload = EthBuiltPayload::new(attributes.id, sealed_block, U256::ZERO, Some(executed));
+    // FIXME(nekomoto): extend the payload with the blob sidecars from the executed txs
 
     Ok(BuildOutcome::Better { payload, cached_reads })
 }

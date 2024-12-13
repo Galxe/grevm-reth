@@ -68,6 +68,7 @@ use crate::{engine::EngineApiRequest, tree::metrics::EngineApiMetrics};
 pub use config::TreeConfig;
 pub use invalid_block_hook::{InvalidBlockHooks, NoopInvalidBlockHook};
 pub use reth_engine_primitives::InvalidBlockHook;
+use reth_pipe_exec_layer_ext::PIPE_EXEC_LAYER_EXT;
 
 /// Keeps track of the state of the tree.
 ///
@@ -1187,7 +1188,11 @@ where
             FromEngine::Request(request) => {
                 match request {
                     EngineApiRequest::InsertExecutedBlock(block) => {
+                        let block_hash = block.block.hash();
                         self.state.tree_state.insert_executed(block);
+                        let _ = PIPE_EXEC_LAYER_EXT
+                            .get()
+                            .and_then(|ext| ext.send_ready_to_new_payload(block_hash));
                     }
                     EngineApiRequest::Beacon(request) => {
                         match request {
