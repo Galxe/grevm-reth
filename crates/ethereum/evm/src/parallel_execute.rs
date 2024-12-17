@@ -355,7 +355,7 @@ where
         block: &BlockWithSenders,
         env: &EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
-        if !self.chain_spec.is_prague_active_at_timestamp(block.timestamp) {
+        if !self.chain_spec.is_cancun_active_at_timestamp(block.timestamp) {
             return Ok(())
         }
 
