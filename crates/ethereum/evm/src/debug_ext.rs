@@ -6,7 +6,7 @@ use std::{
     io::BufWriter,
 };
 
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use reth_primitives::{Address, Receipt, B256};
 use reth_revm::{db::PlainAccount, CacheState, TransitionState};
 use revm_primitives::{EnvWithHandlerCfg, TxEnv};
@@ -20,19 +20,19 @@ pub(crate) struct DebugExtArgs {
     pub dump_block_env: bool,
     pub dump_receipts: bool,
     pub compare_with_seq_exec: bool,
+    pub compare_with_revm_executor: bool,
 }
 
-lazy_static! {
-    pub(crate) static ref DEBUG_EXT: DebugExtArgs = DebugExtArgs {
-        disable_grevm: std::env::var("EVM_DISABLE_GREVM").is_ok(),
-        force_seq_exec: std::env::var("EVM_FORCE_SEQ_EXEC").is_ok(),
-        dump_path: std::env::var("EVM_DUMP_PATH").unwrap_or("data/blocks".to_string()),
-        dump_transitions: std::env::var("EVM_DUMP_TRANSITIONS").is_ok(),
-        dump_block_env: std::env::var("EVM_BLOCK_ENV").is_ok(),
-        dump_receipts: std::env::var("EVM_DUMP_RECEIPTS").is_ok(),
-        compare_with_seq_exec: std::env::var("EVM_COMPARE_WITH_SEQ_EXEC").is_ok(),
-    };
-}
+pub(crate) static DEBUG_EXT: Lazy<DebugExtArgs> = Lazy::new(|| DebugExtArgs {
+    disable_grevm: std::env::var("EVM_DISABLE_GREVM").is_ok(),
+    force_seq_exec: std::env::var("EVM_FORCE_SEQ_EXEC").is_ok(),
+    dump_path: std::env::var("EVM_DUMP_PATH").unwrap_or("data/blocks".to_string()),
+    dump_transitions: std::env::var("EVM_DUMP_TRANSITIONS").is_ok(),
+    dump_block_env: std::env::var("EVM_BLOCK_ENV").is_ok(),
+    dump_receipts: std::env::var("EVM_DUMP_RECEIPTS").is_ok(),
+    compare_with_seq_exec: std::env::var("EVM_COMPARE_WITH_SEQ_EXEC").is_ok(),
+    compare_with_revm_executor: std::env::var("EVM_COMPARE_WITH_REVM_EXECUTOR").is_ok(),
+});
 
 pub(crate) fn dump_block_env(
     env: &EnvWithHandlerCfg,

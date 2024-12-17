@@ -144,6 +144,28 @@ where
         total_difficulty: U256,
     ) -> Result<EthExecuteOutput, BlockExecutionError> {
         debug!(target: "GrevmBlockExecutor", "Executing block {}", block.number);
+
+        let revm_transition_state = if DEBUG_EXT.compare_with_revm_executor {
+            let mut state = State::builder()
+                .with_database(self.state.database.clone())
+                .with_bundle_update()
+                .without_state_clear()
+                .build();
+            state.cache = self.state.cache.clone();
+            state.transition_state = self.state.transition_state.clone();
+            state.bundle_state = self.state.bundle_state.clone();
+            state.block_hashes = self.state.block_hashes.clone();
+            let mut executor = super::execute::EthBlockExecutor::new(
+                self.chain_spec.clone(),
+                self.evm_config.clone(),
+                state,
+            );
+            let _ = executor.execute_without_verification(block, total_difficulty).unwrap();
+            Some(executor.state.transition_state.unwrap())
+        } else {
+            None
+        };
+
         // Prepare state on new block
         self.on_new_block(&block.header);
 
@@ -290,6 +312,25 @@ where
 
         // Apply post execution changes
         self.post_execution(block, total_difficulty)?;
+
+        if let Some(revm_transition_state) = revm_transition_state.as_ref() {
+            // Debug compare transition state between grevm executor and revm executor
+            if revm_transition_state != self.state.transition_state.as_ref().unwrap() {
+                crate::debug_ext::dump_transitions(
+                    block.number,
+                    revm_transition_state,
+                    "revm_transitions.json",
+                )
+                .unwrap();
+                crate::debug_ext::dump_transitions(
+                    block.number,
+                    self.state.transition_state.as_ref().unwrap(),
+                    "grevm_transitions.json",
+                )
+                .unwrap();
+                panic!("Transition state mismatch, block number: {}", block.number);
+            }
+        }
 
         Ok(EthExecuteOutput { receipts, requests, gas_used: cumulative_gas_used })
     }

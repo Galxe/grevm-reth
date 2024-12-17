@@ -257,7 +257,7 @@ pub struct EthBlockExecutor<EvmConfig, DB> {
     /// Chain specific evm config that's used to execute a block.
     executor: EthEvmExecutor<EvmConfig>,
     /// The state to use for execution
-    state: State<DB>,
+    pub(super) state: State<DB>,
 }
 
 impl<EvmConfig, DB> EthBlockExecutor<EvmConfig, DB> {
@@ -307,7 +307,7 @@ where
     /// EIP-7685 [requests](Request).
     ///
     /// Returns an error if execution fails.
-    fn execute_without_verification(
+    pub(super) fn execute_without_verification(
         &mut self,
         block: &BlockWithSenders,
         total_difficulty: U256,

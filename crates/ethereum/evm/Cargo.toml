@@ -23,7 +23,7 @@ reth-prune-types.workspace = true
 reth-execution-types.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-lazy_static = "1.5.0"
+once_cell.workspace = true
 bincode = "1.3.3"
 
 # Ethereum
