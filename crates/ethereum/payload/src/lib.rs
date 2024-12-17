@@ -474,7 +474,9 @@ where
 
     debug!(target: "execute_next_ordered_block", id=%attributes.id, parent_hash = ?parent_block.hash(), parent_number = parent_block.number, "building new payload");
 
-    let ordered_block = PIPE_EXEC_LAYER_EXT.get().unwrap().pull_ordered_block().unwrap();
+    let ordered_block = tokio::task::block_in_place(|| {
+        PIPE_EXEC_LAYER_EXT.get().unwrap().blocking_pull_ordered_block().unwrap()
+    });
     assert_eq!(ordered_block.parent_hash, parent_block.hash());
 
     // Fill the block header with the known values

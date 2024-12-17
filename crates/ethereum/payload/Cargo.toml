@@ -27,6 +27,7 @@ reth-errors.workspace = true
 reth-trie.workspace = true
 reth-chain-state.workspace = true
 reth-pipe-exec-layer-ext.workspace = true
+tokio.workspace = true
 
 # ethereum
 revm.workspace = true

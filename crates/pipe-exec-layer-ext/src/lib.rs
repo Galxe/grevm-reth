@@ -2,8 +2,10 @@ use alloy_primitives::B256;
 use once_cell::sync::OnceCell;
 use reth_primitives::{Address, BlockWithSenders, TransactionSigned};
 use reth_rpc_types::engine::PayloadId;
-use std::sync::Mutex;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::{
+    mpsc::{UnboundedReceiver, UnboundedSender},
+    Mutex,
+};
 
 /// Ordered block determined by consensus layer to execute
 pub struct OrderedBlock {
@@ -89,8 +91,14 @@ pub struct PipeExecLayerExt {
 impl PipeExecLayerExt {
     /// Pull next ordered block from Coordinator.
     /// Returns `None` if the channel has been closed.
-    pub fn pull_ordered_block(&self) -> Option<OrderedBlock> {
-        self.ordered_block_rx.lock().unwrap().blocking_recv()
+    pub async fn pull_ordered_block(&self) -> Option<OrderedBlock> {
+        self.ordered_block_rx.lock().await.recv().await
+    }
+
+    /// Pull next ordered block from Coordinator.
+    /// Returns `None` if the channel has been closed.
+    pub fn blocking_pull_ordered_block(&self) -> Option<OrderedBlock> {
+        self.ordered_block_rx.blocking_lock().blocking_recv()
     }
 
     /// Push execited block hash to Coordinator.
