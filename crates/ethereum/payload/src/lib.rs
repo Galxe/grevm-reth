@@ -491,7 +491,10 @@ where
                 nonce: BEACON_NONCE,
                 base_fee_per_gas: Some(initialized_block_env.basefee.to::<u64>()),
                 number: parent_block.number + 1,
-                gas_limit: initialized_block_env.gas_limit.to::<u64>(),
+                gas_limit: initialized_block_env
+                    .gas_limit
+                    .try_into()
+                    .unwrap_or(chain_spec.max_gas_limit),
                 difficulty: U256::ZERO,
                 extra_data,
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
