@@ -522,7 +522,7 @@ where
         let state_provider = client.state_by_block_hash(parent_block.hash());
         match state_provider {
             Ok(state_provider) => break state_provider,
-            Err(ProviderError::BlockHashNotFound(_)) => {
+            Err(ProviderError::StateForHashNotFound(_)) => {
                 // if the parent block is not found, we need to wait for it to be available before
                 // we can proceed
                 debug!(target: "payload_builder",
@@ -555,7 +555,9 @@ where
             block: &block,
             total_difficulty: initialized_block_env.difficulty,
         })
-        .expect(format!("failed to execute block {:?}", ordered_block.block_id).as_str());
+        .unwrap_or_else(|err| {
+            panic!("failed to execute block {:?}: {:?}", ordered_block.block_id, err)
+        });
 
     if chain_spec.is_prague_active_at_timestamp(attributes.timestamp) {
         block.requests = Some(executor_outcome.requests.clone().into());
@@ -588,10 +590,12 @@ where
                     "failed to calculate state root for empty payload"
                 );
             })
-            .expect(
-                format!("failed to calculate state root for block {:?}", ordered_block.block_id)
-                    .as_str(),
-            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to calculate state root for block {:?}: {:?}",
+                    ordered_block.block_id, err
+                )
+            })
     };
 
     let transactions_root = proofs::calculate_transaction_root(&block.body);
