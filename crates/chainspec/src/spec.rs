@@ -1007,6 +1007,14 @@ impl From<Genesis> for ChainSpec {
                 ForkCondition::Timestamp(testnet_owner_fix_time),
             ));
         }
+        if let Some(testnet_owner_fix_v2_time) =
+            genesis.config.extra_fields.get("testnetOwnerFixV2Time").and_then(|v| v.as_u64())
+        {
+            gravity_hardforks.push((
+                GravityHardfork::TestnetOwnerFixV2.boxed(),
+                ForkCondition::Timestamp(testnet_owner_fix_v2_time),
+            ));
+        }
         let gravity_hardforks = ChainHardforks::new(gravity_hardforks);
 
         // This is intentionally optional: Gravity chains enable the fee floor through genesis,
@@ -2698,6 +2706,26 @@ Post-merge hard forks (timestamp based):
     }
 
     #[test]
+    fn test_parse_testnet_owner_fix_v2_time() {
+        let mut genesis = Genesis::default();
+        genesis
+            .config
+            .extra_fields
+            .insert("testnetOwnerFixV2Time".to_string(), serde_json::json!(99_002));
+
+        let chainspec = ChainSpec::from(genesis);
+        assert_eq!(
+            chainspec.gravity_hardforks.fork(GravityHardfork::TestnetOwnerFixV2),
+            ForkCondition::Timestamp(99_002)
+        );
+        // Independent of v1: missing v1 key stays Never.
+        assert_eq!(
+            chainspec.gravity_hardforks.fork(GravityHardfork::TestnetOwnerFix),
+            ForkCondition::Never
+        );
+    }
+
+    #[test]
     fn test_testnet_owner_fix_time_is_fail_closed() {
         for (key, value) in [
             ("testnetOwnerFixBlock", serde_json::json!(99_001)),
@@ -2710,6 +2738,26 @@ Post-merge hard forks (timestamp based):
             let chainspec = ChainSpec::from(genesis);
             assert_eq!(
                 chainspec.gravity_hardforks.fork(GravityHardfork::TestnetOwnerFix),
+                ForkCondition::Never
+            );
+        }
+    }
+
+    #[test]
+    fn test_testnet_owner_fix_v2_time_is_fail_closed() {
+        for (key, value) in [
+            ("testnetOwnerFixV2Block", serde_json::json!(99_002)),
+            ("testnetOwnerFixV2Time", serde_json::json!("99002")),
+            ("testnet_owner_fix_v2_time", serde_json::json!(99_002)),
+            // v1 key must not schedule v2
+            ("testnetOwnerFixTime", serde_json::json!(99_001)),
+        ] {
+            let mut genesis = Genesis::default();
+            genesis.config.extra_fields.insert(key.to_string(), value);
+
+            let chainspec = ChainSpec::from(genesis);
+            assert_eq!(
+                chainspec.gravity_hardforks.fork(GravityHardfork::TestnetOwnerFixV2),
                 ForkCondition::Never
             );
         }

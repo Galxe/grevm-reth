@@ -1,16 +1,21 @@
-//! `TestnetOwnerFix` hardfork — forced `Ownable2Step` `transferOwnership` migration.
+//! `TestnetOwnerFix` / `TestnetOwnerFixV2` — forced `Ownable2Step`
+//! `transferOwnership` migration.
 //!
 //! Longevity Testnet (`chain_id == 7771625`) genesis `StakePool`s used Aptos-era
 //! identity material as `owner`. Those addresses look like EOAs but have no
 //! recoverable secp256k1 private key, so `onlyOwner` admin paths are stuck.
 //!
-//! On the unique Longevity block that crosses `testnetOwnerFixTime`
-//! (`transitions_at_timestamp`, same one-shot gate as Alpha / EIP-2935), the
-//! pipe layer injects four synthetic top-level txs (one per genesis pool) with
-//! `from = old_owner`, calling `transferOwnership(new_owner)`. Gas reuses the
-//! existing Alpha system-tx levers (`gas_price = 0` + `transact_system_txn`
-//! basefee/balance disable). The txs are written into the block body with
-//! `TransactionSenders = old_owner`.
+//! On the unique Longevity block that crosses `testnetOwnerFixTime` or
+//! `testnetOwnerFixV2Time` (`transitions_at_timestamp`, same one-shot gate as
+//! Alpha / EIP-2935), the pipe layer injects four synthetic top-level txs (one
+//! per genesis pool) with `from = old_owner`, calling
+//! `transferOwnership(new_owner)`. Gas reuses the existing Alpha system-tx
+//! levers (`gas_price = 0` + `transact_system_txn` basefee/balance disable).
+//! The txs are written into the block body with `TransactionSenders = old_owner`.
+//!
+//! V2 exists because Longevity already consumed the v1 one-shot with a wrong
+//! (CLI compressed-pubkey) `new_owner` table; `Ownable2Step` lets a later
+//! `transferOwnership` from the same `old_owner` overwrite `pendingOwner`.
 //!
 //! This module owns the hardcoded migration table and calldata encoding.
 //! There is no slot precheck: any forced-tx revert panics at execution time.
@@ -84,5 +89,41 @@ mod tests {
         let data = transfer_ownership_calldata(MIGRATION_TABLE[0].new_owner);
         assert_eq!(&data[..4], &[0xf2, 0xfd, 0xe3, 0x8b]);
         assert_eq!(data.len(), 4 + 32);
+    }
+
+    /// Pin cast-derived ceremony addresses. The v1 activation used the wrong
+    /// CLI compressed-pubkey hashes; those must never re-enter this table.
+    #[test]
+    fn migration_table_new_owners_are_cast_derived() {
+        assert_eq!(
+            MIGRATION_TABLE[0].new_owner,
+            address!("91a59bae639a3cef0c41e4c61268aa54c71de1ba")
+        );
+        assert_eq!(
+            MIGRATION_TABLE[1].new_owner,
+            address!("6a0da8def2ccd134119c0293ad470d1aa1d6129a")
+        );
+        assert_eq!(
+            MIGRATION_TABLE[2].new_owner,
+            address!("5a1ba49d261e1e58dd1b8cf0aeeb1976d04ac6bd")
+        );
+        assert_eq!(
+            MIGRATION_TABLE[3].new_owner,
+            address!("2326795e2033d209ea12b1022c50ae592ac2b720")
+        );
+
+        let wrong_cli_addrs = [
+            address!("c7536c625758b3072c43eab8e8880c1ae8cb4cf9"),
+            address!("f0de80e6df293be1b81d106afd5ae5430079e9d2"),
+            address!("2c26bab4ebcc88fb0ad580652938a27e906037f0"),
+            address!("3e1b5fab188ddc208c547dd689b0f6b4864b4127"),
+        ];
+        for row in &MIGRATION_TABLE {
+            assert!(
+                !wrong_cli_addrs.contains(&row.new_owner),
+                "{} new_owner must not be the v1 CLI compressed-pubkey address",
+                row.label
+            );
+        }
     }
 }

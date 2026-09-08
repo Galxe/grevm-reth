@@ -16,10 +16,10 @@ hardfork!(
         /// Beta hardfork: consensus-critical filter policy changes.
         ///
         /// Until Beta activates:
-        /// - EIP-7702 lockdown (audit#838): reject type-4 txs and txs from/to
-        ///   currently-delegated accounts.
-        /// - Block-gas packing (audit#646): prefix-cut on cumulative `tx.gas_limit()`
-        ///   and treat the suffix as discarded (pre-Beta STF).
+        /// - EIP-7702 lockdown (audit#838): reject type-4 txs and txs from/to currently-delegated
+        ///   accounts.
+        /// - Block-gas packing (audit#646): prefix-cut on cumulative `tx.gas_limit()` and treat
+        ///   the suffix as discarded (pre-Beta STF).
         ///
         /// From Beta onward, lockdown is released and gas packing becomes last-gate
         /// (invalid txs do not steal budget; packing continues after a non-fit). Gas
@@ -42,11 +42,22 @@ hardfork!(
         /// pipe layer also requires `chain_id == 7771625`; any other chain is a
         /// no-op even when the timestamp key is present. Missing or malformed
         /// configuration leaves the migration disabled (fail-closed).
+        ///
+        /// Longevity already crossed this one-shot with a wrong `new_owner`
+        /// table; do not reschedule it. Use [`Self::TestnetOwnerFixV2`] to
+        /// overwrite `pendingOwner` with cast-derived addresses.
         TestnetOwnerFix,
+        /// Longevity follow-up: same injection as [`Self::TestnetOwnerFix`], but
+        /// a fresh one-shot so the cast-derived `new_owner` table can fire after
+        /// the v1 activation already consumed `testnetOwnerFixTime`.
+        ///
+        /// Activation is timestamp-based via genesis `testnetOwnerFixV2Time`.
+        /// Same Longevity `chain_id` gate and fail-closed parse rules as v1.
+        TestnetOwnerFixV2,
     }
 );
 
-/// Longevity Testnet chain id. Gates [`GravityHardfork::TestnetOwnerFix`].
+/// Longevity Testnet chain id. Gates `TestnetOwnerFix` / `TestnetOwnerFixV2`.
 pub const LONGEVITY_TESTNET_CHAIN_ID: u64 = 7_771_625;
 
 /// Canonical sender address of every Gravity protocol-injected system transaction

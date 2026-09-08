@@ -1,4 +1,4 @@
-//! Pipe-layer injection for [`GravityHardfork::TestnetOwnerFix`].
+//! Pipe-layer injection for `TestnetOwnerFix` / `TestnetOwnerFixV2`.
 //!
 //! Runs after metadata/DKG/JWK system txs and before user txs. Constructs four
 //! forced `transferOwnership` calls with `from = old_owner`, executes them via
@@ -7,8 +7,13 @@
 //!
 //! One-shot gate matches Alpha / EIP-2935:
 //! `transitions_at_timestamp(current_ts, parent_ts)` — fires only on the unique
-//! Longevity activation block. Wrong chain / non-crossing block → empty vec.
-//! Any forced-tx revert panics so the block is not committed as a success.
+//! Longevity activation block for whichever fork is crossing. Wrong chain /
+//! non-crossing block → empty vec. Any forced-tx revert panics so the block is
+//! not committed as a success.
+//!
+//! V2 is a fresh one-shot for Longevity after v1 already consumed
+//! `testnetOwnerFixTime` with the wrong `new_owner` table. Both forks share
+//! [`MIGRATION_TABLE`] (cast-derived addresses).
 
 use crate::onchain_config::{new_system_call_txn, SystemTxnResult};
 use reth_chainspec::{ChainSpec, EthChainSpec, GravityHardfork, LONGEVITY_TESTNET_CHAIN_ID};
@@ -24,11 +29,12 @@ use tracing::info;
 type Executor<'a> =
     &'a mut dyn ParallelExecutor<Primitives = EthPrimitives, Error = BlockExecutionError>;
 
-/// Execute `TestnetOwnerFix` forced transfers on the Longevity activation block.
+/// Execute forced ownership transfers on a Longevity OwnerFix crossing block.
 ///
-/// Returns an empty vec when `chain_id` is not Longevity or when
-/// `parent_ts < fixTime <= current_ts` is false. Panics if any forced transfer
-/// fails to execute or reverts.
+/// Returns an empty vec when `chain_id` is not Longevity or when neither
+/// `TestnetOwnerFix` nor `TestnetOwnerFixV2` is crossing
+/// (`parent_ts < fixTime <= current_ts`). Panics if any forced transfer fails
+/// to execute or reverts.
 pub(crate) fn execute_forced_transfers(
     executor: Executor<'_>,
     chain_spec: &ChainSpec,
@@ -41,26 +47,34 @@ pub(crate) fn execute_forced_transfers(
     if chain_spec.chain().id() != LONGEVITY_TESTNET_CHAIN_ID {
         return Vec::new();
     }
-    if !chain_spec
+
+    let crossing_v2 = chain_spec
+        .gravity_hardforks()
+        .fork(GravityHardfork::TestnetOwnerFixV2)
+        .transitions_at_timestamp(block_timestamp, parent_timestamp);
+    let crossing_v1 = chain_spec
         .gravity_hardforks()
         .fork(GravityHardfork::TestnetOwnerFix)
-        .transitions_at_timestamp(block_timestamp, parent_timestamp)
-    {
+        .transitions_at_timestamp(block_timestamp, parent_timestamp);
+    if !crossing_v2 && !crossing_v1 {
         return Vec::new();
     }
+    // Prefer V2 label when both somehow share a timestamp (should not happen in
+    // production genesis); still inject only once.
+    let fork_label = if crossing_v2 { "TestnetOwnerFixV2" } else { "TestnetOwnerFix" };
 
     let mut results = Vec::with_capacity(MIGRATION_TABLE.len());
     for row in &MIGRATION_TABLE {
         let result = execute_one(executor, evm_env.clone(), system_tx_gas_price, row)
             .unwrap_or_else(|e| {
                 panic!(
-                    "TestnetOwnerFix: forced transferOwnership failed for {} ({}) at block {block_number}: {e:?}",
+                    "{fork_label}: forced transferOwnership failed for {} ({}) at block {block_number}: {e:?}",
                     row.label, row.stake_pool
                 )
             });
         if !result.result.is_success() {
             panic!(
-                "TestnetOwnerFix: transferOwnership reverted for {} ({}) at block {block_number}: {:?}",
+                "{fork_label}: transferOwnership reverted for {} ({}) at block {block_number}: {:?}",
                 row.label,
                 row.stake_pool,
                 result.result
@@ -75,7 +89,8 @@ pub(crate) fn execute_forced_transfers(
         timestamp = block_timestamp,
         parent_timestamp,
         pools = MIGRATION_TABLE.len(),
-        "TestnetOwnerFix: injected forced transferOwnership txs"
+        fork = fork_label,
+        "OwnerFix: injected forced transferOwnership txs"
     );
     results
 }
@@ -108,16 +123,32 @@ mod tests {
     use std::sync::Arc;
 
     const FIX_TS: u64 = 1_700_000_000;
+    const FIX_V2_TS: u64 = 1_800_000_000;
 
-    fn longevity_spec_with_fix(fix_ts: Option<u64>) -> Arc<ChainSpec> {
+    fn longevity_spec_with_forks(v1_ts: Option<u64>, v2_ts: Option<u64>) -> Arc<ChainSpec> {
         let mut genesis = MAINNET.genesis.clone();
         genesis.config.chain_id = LONGEVITY_TESTNET_CHAIN_ID;
         let mut spec = ChainSpec::from(genesis);
-        if let Some(ts) = fix_ts {
-            spec.gravity_hardforks = ChainHardforks::from([(
-                GravityHardfork::TestnetOwnerFix,
-                ForkCondition::Timestamp(ts),
-            )]);
+        match (v1_ts, v2_ts) {
+            (Some(v1), Some(v2)) => {
+                spec.gravity_hardforks = ChainHardforks::from([
+                    (GravityHardfork::TestnetOwnerFix, ForkCondition::Timestamp(v1)),
+                    (GravityHardfork::TestnetOwnerFixV2, ForkCondition::Timestamp(v2)),
+                ]);
+            }
+            (Some(v1), None) => {
+                spec.gravity_hardforks = ChainHardforks::from([(
+                    GravityHardfork::TestnetOwnerFix,
+                    ForkCondition::Timestamp(v1),
+                )]);
+            }
+            (None, Some(v2)) => {
+                spec.gravity_hardforks = ChainHardforks::from([(
+                    GravityHardfork::TestnetOwnerFixV2,
+                    ForkCondition::Timestamp(v2),
+                )]);
+            }
+            (None, None) => {}
         }
         Arc::new(spec)
     }
@@ -129,10 +160,10 @@ mod tests {
             .cancun_activated()
             .prague_activated()
             .build();
-        spec.gravity_hardforks = ChainHardforks::from([(
-            GravityHardfork::TestnetOwnerFix,
-            ForkCondition::Timestamp(FIX_TS),
-        )]);
+        spec.gravity_hardforks = ChainHardforks::from([
+            (GravityHardfork::TestnetOwnerFix, ForkCondition::Timestamp(FIX_TS)),
+            (GravityHardfork::TestnetOwnerFixV2, ForkCondition::Timestamp(FIX_V2_TS)),
+        ]);
         let spec = Arc::new(spec);
         assert_ne!(spec.chain().id(), LONGEVITY_TESTNET_CHAIN_ID);
 
@@ -145,15 +176,15 @@ mod tests {
             EvmEnv::default(),
             0,
             1,
-            FIX_TS,
-            FIX_TS - 1,
+            FIX_V2_TS,
+            FIX_V2_TS - 1,
         );
         assert!(out.is_empty());
     }
 
     #[test]
     fn unscheduled_fork_is_noop_on_longevity_chain_id() {
-        let spec = longevity_spec_with_fix(None);
+        let spec = longevity_spec_with_forks(None, None);
         assert_eq!(spec.chain().id(), LONGEVITY_TESTNET_CHAIN_ID);
 
         let db = CacheDB::<EmptyDB>::default();
@@ -173,19 +204,54 @@ mod tests {
 
     #[test]
     fn post_activation_block_is_noop_even_when_fork_active() {
-        let spec = longevity_spec_with_fix(Some(FIX_TS));
+        let spec = longevity_spec_with_forks(Some(FIX_TS), Some(FIX_V2_TS));
         assert!(spec
             .gravity_hardforks()
-            .is_fork_active_at_timestamp(GravityHardfork::TestnetOwnerFix, FIX_TS + 1));
+            .is_fork_active_at_timestamp(GravityHardfork::TestnetOwnerFixV2, FIX_V2_TS + 1));
         assert!(!spec
             .gravity_hardforks()
-            .fork(GravityHardfork::TestnetOwnerFix)
-            .transitions_at_timestamp(FIX_TS + 1, FIX_TS));
+            .fork(GravityHardfork::TestnetOwnerFixV2)
+            .transitions_at_timestamp(FIX_V2_TS + 1, FIX_V2_TS));
 
         let db = CacheDB::<EmptyDB>::default();
         let evm_config = EthEvmConfig::new(spec.clone());
         let mut executor = WrapExecutor::new(BasicBlockExecutor::new(evm_config, db));
         // parent_ts already past fixTime ⇒ not a crossing block ⇒ no inject.
+        let out = execute_forced_transfers(
+            &mut executor,
+            spec.as_ref(),
+            EvmEnv::default(),
+            0,
+            2,
+            FIX_V2_TS + 1,
+            FIX_V2_TS,
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn v2_crossing_is_recognized_after_v1_already_active() {
+        // Longevity reality: v1 already crossed; only v2 is still a one-shot.
+        let spec = longevity_spec_with_forks(Some(FIX_TS), Some(FIX_V2_TS));
+        assert!(spec
+            .gravity_hardforks()
+            .is_fork_active_at_timestamp(GravityHardfork::TestnetOwnerFix, FIX_V2_TS));
+        assert!(!spec
+            .gravity_hardforks()
+            .fork(GravityHardfork::TestnetOwnerFix)
+            .transitions_at_timestamp(FIX_V2_TS, FIX_V2_TS - 1));
+        assert!(spec
+            .gravity_hardforks()
+            .fork(GravityHardfork::TestnetOwnerFixV2)
+            .transitions_at_timestamp(FIX_V2_TS, FIX_V2_TS - 1));
+
+        // Gate-only check: chain id + crossing would proceed into execute_one.
+        // EmptyDB has no StakePool code, so we only assert the gate helpers here
+        // (full inject covered by e2e). Non-crossing after v2 stays empty above.
+        let db = CacheDB::<EmptyDB>::default();
+        let evm_config = EthEvmConfig::new(spec.clone());
+        let mut executor = WrapExecutor::new(BasicBlockExecutor::new(evm_config, db));
+        // After v1 time but before v2: neither fork is crossing.
         let out = execute_forced_transfers(
             &mut executor,
             spec.as_ref(),

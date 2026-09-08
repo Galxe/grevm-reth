@@ -76,7 +76,7 @@ impl SystemTxnResult {
 
     /// Insert this system/protocol-injected transaction into an existing executed block
     /// result at `insert_position`. Position 0 is typically the metadata tx; later
-    /// positions are validator system txs and (on Longevity) TestnetOwnerFix forced txs.
+    /// positions are validator system txs and (on Longevity) `TestnetOwnerFix` forced txs.
     pub(crate) fn insert_to_executed_ordered_block_result(
         self,
         result: &mut crate::ExecuteOrderedBlockResult,

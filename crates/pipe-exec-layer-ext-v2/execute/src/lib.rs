@@ -1302,8 +1302,8 @@ impl<Storage: GravityStorage> Core<Storage> {
             system_tx_gas_price,
         );
 
-        // Single TestnetOwnerFix seam: after protocol system txs, before user
-        // txs / epoch-block assembly. Longevity-only one-shot via
+        // Single OwnerFix seam (v1 or v2): after protocol system txs, before
+        // user txs / epoch-block assembly. Longevity-only one-shot via
         // transitions_at_timestamp; forced-tx revert → panic inside the helper.
         let fix_owner_results = testnet_owner_fix::execute_forced_transfers(
             &mut *executor,
