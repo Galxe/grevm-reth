@@ -166,6 +166,7 @@ where
                     block_number,
                     block_timestamp,
                     current_randomness,
+                    false,
                 );
 
                 let mut results = Vec::with_capacity(transactions.len());

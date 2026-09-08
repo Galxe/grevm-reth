@@ -242,9 +242,11 @@ where
             .spawn_trace_transaction_in_block(
                 hash,
                 TracingInspectorConfig::default_parity(),
-                move |tx_info, inspector, _, _| {
-                    let traces =
-                        inspector.into_parity_builder().into_localized_transaction_traces(tx_info);
+                move |tx_info, inspector, res, _| {
+                    let traces = inspector
+                        .into_parity_builder()
+                        .with_transaction_gas_used(res.result.tx_gas_used())
+                        .into_localized_transaction_traces(tx_info);
                     Ok(traces)
                 },
             )
@@ -415,9 +417,11 @@ where
                     None,
                     TracingInspectorConfig::default_parity(),
                     move |tx_info, mut ctx| {
+                        let gas_used = ctx.result.tx_gas_used();
                         let mut traces = ctx
                             .take_inspector()
                             .into_parity_builder()
+                            .with_transaction_gas_used(gas_used)
                             .into_localized_transaction_traces(tx_info);
                         traces.retain(|trace| matcher.matches(&trace.trace));
                         Ok(Some(traces))
@@ -500,9 +504,14 @@ where
                 Some(block.clone()),
                 TracingInspectorConfig::default_parity(),
                 |tx_info, mut ctx| {
+                    // Root trace gasUsed must mirror the tx ExecutionResult (includes
+                    // intrinsic). Inspector call-frame gas alone omits intrinsic and can
+                    // drift on deep trees after refunds — see #372 post_alpha_trace.
+                    let gas_used = ctx.result.tx_gas_used();
                     let traces = ctx
                         .take_inspector()
                         .into_parity_builder()
+                        .with_transaction_gas_used(gas_used)
                         .into_localized_transaction_traces(tx_info);
                     Ok(traces)
                 },
@@ -536,9 +545,11 @@ where
                 None,
                 TracingInspectorConfig::from_parity_config(&trace_types),
                 move |tx_info, mut ctx| {
+                    let gas_used = ctx.result.tx_gas_used();
                     let mut full_trace = ctx
                         .take_inspector()
                         .into_parity_builder()
+                        .with_transaction_gas_used(gas_used)
                         .into_trace_results(&ctx.result, &trace_types);
 
                     // If statediffs were requested, populate them with the account balance and

@@ -7,7 +7,7 @@ use alloy_network::TransactionBuilder;
 use alloy_primitives::{TxKind, U256};
 use alloy_rpc_types_eth::{state::EvmOverrides, BlockId};
 use futures::Future;
-use reth_chainspec::MIN_TRANSACTION_GAS;
+use reth_chainspec::{is_gravity_system_caller, MIN_TRANSACTION_GAS};
 use reth_errors::ProviderError;
 use reth_evm::{
     env::BlockEnvironment, ConfigureEvm, Database, Evm, EvmEnvFor, EvmFor, TransactionEnvMut,
@@ -150,11 +150,13 @@ pub trait EstimateCall: Call {
 
         // Create EVM instance once and reuse it throughout the entire estimation process
         let mut evm = self.evm_config().evm_with_env(&mut db, evm_env);
+        let for_system_tx = is_gravity_system_caller(tx_env.caller());
         self.register_custom_precompiles(
             &mut evm,
             block_number,
             block_timestamp,
             current_randomness,
+            for_system_tx,
         );
 
         // For basic transfers, try using minimum gas before running full binary search

@@ -4,7 +4,6 @@ mod channel;
 mod custom_precompiles;
 mod eip_2935;
 mod metrics;
-pub mod mint_precompile;
 pub mod onchain_config;
 pub mod randomness_precompile;
 mod system_caller_migration;
@@ -28,6 +27,7 @@ use alloy_primitives::{Address, Bytes, TxHash, B256, U256};
 use alloy_rpc_types_eth::TransactionRequest;
 use gravity_precompiles::{
     bls_pop_verify::{create_bls_pop_verify_precompile, BLS_PRECOMPILE_ADDR},
+    mint_token::{create_mint_token_precompile, NATIVE_MINT_PRECOMPILE_ADDR},
     randomness_by_height::randomness_by_height_gas_policy_at_block,
 };
 use gravity_primitives::PIPE_BLOCK_GAS_LIMIT;
@@ -74,14 +74,13 @@ use tokio::sync::{
 use tracing::*;
 
 use crate::{
-    mint_precompile::create_mint_token_precompile,
     onchain_config::{
         construct_metadata_txn, construct_validator_txn_from_extra_data,
         dkg::{convert_dkg_start_event_to_api, DKGStartEvent},
         system_txns_into_executed_ordered_block_result,
         types::{DataRecorded, OracleDelivered},
-        SystemTxnResult, DKG_ADDR, NATIVE_MINT_PRECOMPILE_ADDR, NATIVE_ORACLE_ADDR,
-        RANDOMNESS_BY_HEIGHT_PRECOMPILE_ADDR, SYSTEM_CALLER,
+        SystemTxnResult, DKG_ADDR, NATIVE_ORACLE_ADDR, RANDOMNESS_BY_HEIGHT_PRECOMPILE_ADDR,
+        SYSTEM_CALLER,
     },
     randomness_precompile::{ExecutionRandomnessProvider, GravityStorageRandomnessProvider},
 };

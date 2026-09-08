@@ -214,6 +214,7 @@ pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthA
                             block_number,
                             block_timestamp,
                             current_randomness,
+                            false,
                         );
                         let mut builder = this.evm_config().create_block_builder(evm, &parent, ctx);
 
@@ -242,6 +243,7 @@ pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthA
                             block_number,
                             block_timestamp,
                             current_randomness,
+                            false,
                         );
                         let mut builder = this.evm_config().create_block_builder(evm, &parent, ctx);
 
@@ -559,12 +561,16 @@ pub trait Call:
     fn max_simulate_blocks(&self) -> u64;
 
     /// Registers chain-specific precompiles for this EVM block.
+    ///
+    /// `for_system_tx` selects the pipe `transact_system_txn` set (includes mint)
+    /// vs the user-tx set (BLS + post-Alpha randomness only).
     fn register_custom_precompiles<EV>(
         &self,
         _evm: &mut EV,
         _block_number: U256,
         _block_timestamp: U256,
         _current_randomness: Option<B256>,
+        _for_system_tx: bool,
     ) where
         EV: Evm<Precompiles = PrecompilesMap>,
     {
@@ -616,12 +622,14 @@ pub trait Call:
         let block_number = evm_env.block_env.number();
         let block_timestamp = evm_env.block_env.timestamp();
         let current_randomness = evm_env.block_env.prevrandao();
+        let for_system_tx = is_gravity_system_caller(tx_env.caller());
         let mut evm = self.evm_config().evm_with_env(db, evm_env);
         self.register_custom_precompiles(
             &mut evm,
             block_number,
             block_timestamp,
             current_randomness,
+            for_system_tx,
         );
         let res = evm.transact(tx_env).map_err(Self::Error::from_evm_err)?;
 
@@ -644,12 +652,14 @@ pub trait Call:
         let block_number = evm_env.block_env.number();
         let block_timestamp = evm_env.block_env.timestamp();
         let current_randomness = evm_env.block_env.prevrandao();
+        let for_system_tx = is_gravity_system_caller(tx_env.caller());
         let mut evm = self.evm_config().evm_with_env_and_inspector(db, evm_env, inspector);
         self.register_custom_precompiles(
             &mut evm,
             block_number,
             block_timestamp,
             current_randomness,
+            for_system_tx,
         );
         let res = evm.transact(tx_env).map_err(Self::Error::from_evm_err)?;
 
@@ -858,10 +868,11 @@ pub trait Call:
         // the initial cfg avoids that wasted rebuild + `register_custom_precompiles`
         // call. Matches the block-family path in `trace.rs` (`first_kind_system_exempt`).
         let mut transactions = transactions.into_iter().peekable();
-        let first_kind_system_exempt = exempt_fork_active &&
+        let first_is_system_caller =
             transactions.peek().map(|tx| is_gravity_system_caller(tx.signer())).unwrap_or(false);
+        let first_kind_system_exempt = exempt_fork_active && first_is_system_caller;
 
-        let mut current_kind_system_exempt = first_kind_system_exempt;
+        let mut current_is_system_caller = first_is_system_caller;
         let mut initial_env = evm_env;
         initial_env.cfg_env.disable_base_fee = first_kind_system_exempt;
         initial_env.cfg_env.disable_balance_check = first_kind_system_exempt;
@@ -871,6 +882,7 @@ pub trait Call:
             block_number,
             block_timestamp,
             current_randomness,
+            first_is_system_caller,
         );
 
         // Protocol invariant pin: same rationale as `trace.rs`'s block-family loop —
@@ -895,8 +907,10 @@ pub trait Call:
                 saw_non_system_caller_tx = true;
             }
 
-            let tx_is_system_exempt = exempt_fork_active && is_system_caller;
-            if tx_is_system_exempt != current_kind_system_exempt {
+            // Rebuild on SYSTEM_CALLER↔user even pre-Alpha: mint is system-only and must
+            // drop when crossing into user txs (cfg disables may stay false both sides).
+            if is_system_caller != current_is_system_caller {
+                let tx_is_system_exempt = exempt_fork_active && is_system_caller;
                 let (db_taken, mut env_taken) = evm.finish();
                 env_taken.cfg_env.disable_base_fee = tx_is_system_exempt;
                 env_taken.cfg_env.disable_balance_check = tx_is_system_exempt;
@@ -906,8 +920,9 @@ pub trait Call:
                     block_number,
                     block_timestamp,
                     current_randomness,
+                    is_system_caller,
                 );
-                current_kind_system_exempt = tx_is_system_exempt;
+                current_is_system_caller = is_system_caller;
             }
 
             let tx_env = self.evm_config().tx_env(tx);

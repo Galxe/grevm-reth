@@ -9,6 +9,10 @@ use reth_evm::precompiles::{DynPrecompile, PrecompileInput};
 use revm::precompile::{PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult};
 use tracing::{info, warn};
 
+/// Address of Gravity's native mint precompile.
+pub const NATIVE_MINT_PRECOMPILE_ADDR: Address =
+    address!("00000000000000000000000000000001625f5000");
+
 /// Authorized caller address (JWK Manager at 0x2018)
 ///
 /// Only this address is allowed to call the mint precompile.
@@ -45,7 +49,7 @@ pub fn create_mint_token_precompile() -> DynPrecompile {
 ///
 /// # Security
 ///
-/// - Only JWK Manager (AUTHORIZED_CALLER) is allowed to call this precompile
+/// - Only JWK Manager (`AUTHORIZED_CALLER`) is allowed to call this precompile
 /// - Calls from other addresses will be rejected with an error
 ///
 /// # Parameter format (53 bytes)
@@ -62,7 +66,7 @@ pub fn create_mint_token_precompile() -> DynPrecompile {
 /// - `Unauthorized caller` - Caller is not the authorized JWK Manager
 /// - `Invalid input length` - Input data is less than 53 bytes
 /// - `Invalid function ID` - Function ID is not 0x01
-/// - `Invalid or zero amount` - Amount is zero or exceeds u128::MAX
+/// - `Invalid or zero amount` - Amount is zero or exceeds `u128::MAX`
 /// - `Balance overflow` - Adding amount would overflow the recipient's balance
 /// - `Failed to load account` - Journal failed to load the recipient account
 fn mint_token_handler(mut input: PrecompileInput<'_>) -> PrecompileResult {

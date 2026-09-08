@@ -148,7 +148,8 @@ jobs:
             --test gravity_system_tx_pre_alpha_replay_test \
             --test gravity_system_tx_simulation_anti_spoof_test \
             --test gravity_bls_precompile_test \
-            --test gravity_system_tx_bls_replay_test
+            --test gravity_system_tx_bls_replay_test \
+            --test gravity_system_tx_post_alpha_trace_test
 
   integration-success:
     name: integration success

@@ -92,9 +92,10 @@ pub const JWK_MANAGER_ADDR: Address = address!("00000000000000000000000000000001
 pub const ORACLE_REQUEST_QUEUE_ADDR: Address = address!("00000000000000000000000000000001625f4002");
 
 // Precompiles (0x1625F5xxx)
-pub const NATIVE_MINT_PRECOMPILE_ADDR: Address =
-    address!("00000000000000000000000000000001625f5000");
-pub use gravity_precompiles::randomness_by_height::RANDOMNESS_BY_HEIGHT_PRECOMPILE_ADDR;
+pub use gravity_precompiles::{
+    mint_token::NATIVE_MINT_PRECOMPILE_ADDR,
+    randomness_by_height::RANDOMNESS_BY_HEIGHT_PRECOMPILE_ADDR,
+};
 // Reserved synthetic protocol-log emitter; not an executable precompile.
 pub use reth_chainspec::GRAVITY_TX_SKIPPED_LOG_ADDRESS;
 

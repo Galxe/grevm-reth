@@ -12,7 +12,7 @@
 # shell script keeps the assertion text usable as both a hard check AND a
 # paste-able reproduction recipe.
 #
-# Invariants (8 total):
+# Invariants (10 total):
 #   1. `fn transact_system_txn` lives in exactly two source files
 #      (serial impl + grevm impl).
 #   2. SYSTEM_CALLER address literal `625f0000` has a single source of
@@ -23,7 +23,7 @@
 #   4. `execute_history_block` / `push_history_block` has no non-test
 #      callers (R6 / design §3.6 keeps this debug-only).
 #   5. Pipe-layer custom precompile registration mirrors RPC re-registration
-#      so RPC trace replay doesn't silently lose BLS/randomness.
+#      so RPC trace replay doesn't silently lose BLS/mint/randomness.
 #   6. `is_system_tx_gas_exempt` predicate is referenced by all three
 #      layers: evm, pipe, rpc (single-source-of-truth invariant).
 #   7. (HP-2) `disable_base_fee` / `disable_balance_check` writes are
@@ -45,6 +45,11 @@
 #      Without invariant 9, a newly added test file is silently skipped by
 #      CI (as happened with the six #367 / #370 files) — assertions may
 #      pass locally but never gate a merge.
+#  10. Every address identifier in the pipe's `system_precompiles` vec is
+#      referenced by RPC `register_custom_precompiles` in
+#      `crates/rpc/rpc/src/eth/helpers/call.rs`. Today: BLS + mint (mint
+#      gated on `for_system_tx`). A new system precompile that lands only
+#      on the pipe side is the #372 class of RPC replay divergence.
 #
 # Invocation:
 #   bash scripts/check-gravity-invariants.sh
@@ -263,18 +268,8 @@ echo "Invariant 9: CI --test allowlist covers all gravity_system_tx_* / gravity_
 # means the corresponding `--test <name>` line must be added to the
 # workflow.
 declare -A KNOWN_UNWIRED_TESTS=(
-    # Blocked on #372 Track A (mint precompile RPC registration). Fixture is
-    # now correct (ALPHA_TIME_ALWAYS = ALPHA_TS_BASE + 1 and SYSTEM_CALLER
-    # pre-seeded with nonce=1 — see gravity_system_tx_post_alpha_trace_test.rs
-    # lines 82-113), so both `#[test]` fns reach the trace assertions instead
-    # of panicking on the pre-flight balance sanity check. What they now fail
-    # on is the block-family trace-vs-canonical byte-equal invariant:
-    # `trace_block(1)[0]` (block 1's metadata system tx) reports
-    # `gas_used = 292093` while canonical execution reports `gas_used = 282665`
-    # — a 9428-gas divergence caused by the RPC-side execution path missing
-    # the mint precompile registration that the pipe-layer canonical path has.
-    # Wire after #372 Track A lands.
-    [gravity_system_tx_post_alpha_trace_test]="blocked on #372 Track A (mint precompile RPC registration) — trace_block(1)[0] gas diverges 292093 vs canonical 282665 (delta 9428)"
+    # Empty: `gravity_system_tx_post_alpha_trace_test` is wired to
+    # integration.yml after #372 (mint precompile RPC registration).
 )
 
 workflow="$REPO_ROOT/.github/workflows/integration.yml"
@@ -317,18 +312,60 @@ fi
 # Also flag KNOWN_UNWIRED_TESTS references to files that no longer exist —
 # likely a rename / deletion missed the invariant update.
 stale=""
-for binary in "${!KNOWN_UNWIRED_TESTS[@]}"; do
-    if [ ! -f "$tests_dir/${binary}.rs" ]; then
-        stale="${stale}${binary}
+if [ "${#KNOWN_UNWIRED_TESTS[@]}" -gt 0 ]; then
+    for binary in "${!KNOWN_UNWIRED_TESTS[@]}"; do
+        if [ ! -f "$tests_dir/${binary}.rs" ]; then
+            stale="${stale}${binary}
 "
-    fi
-done
+        fi
+    done
+fi
 if [ -n "$stale" ]; then
     fail 9 "KNOWN_UNWIRED_TESTS references file(s) that no longer exist under $tests_dir/. Remove the stale entries or restore the files. Stale:
 ${stale}" \
         "ls $tests_dir/"
 fi
 ok 9 "CI --test allowlist + KNOWN_UNWIRED_TESTS jointly cover all gravity_system_tx_* / gravity_bls_* integration tests"
+
+# ---------------------------------------------------------------------------
+# Invariant 10 — every address ident in pipe `system_precompiles` is
+# registered in RPC `register_custom_precompiles` (`call.rs`).
+# Today: BLS + mint. A new system precompile that lands only on the pipe
+# side is the exact #372 class of RPC replay divergence.
+# ---------------------------------------------------------------------------
+echo "Invariant 10: RPC call.rs registers every pipe system_precompiles address ident"
+
+pipe_lib="crates/pipe-exec-layer-ext-v2/execute/src/lib.rs"
+rpc_call="crates/rpc/rpc/src/eth/helpers/call.rs"
+
+if [ ! -f "$pipe_lib" ] || [ ! -f "$rpc_call" ]; then
+    fail 10 "expected $pipe_lib and $rpc_call to exist" \
+        "ls $pipe_lib $rpc_call"
+fi
+
+# Extract *_ADDR identifiers from the address slot of `system_precompiles`
+# vec entries (`(SOME_ADDR, some_precompile),`).
+mapfile -t addrs < <(awk '/let system_precompiles/,/];/' "$pipe_lib" | \
+    rg -o '[A-Z][A-Z0-9_]*_ADDR' | sort -u)
+
+if [ "${#addrs[@]}" -eq 0 ]; then
+    fail 10 "could not extract any *_ADDR identifiers from system_precompiles vec in $pipe_lib" \
+        "rg -n -A 10 'let system_precompiles' $pipe_lib"
+fi
+
+missing=""
+for addr in "${addrs[@]}"; do
+    if ! rg --type rust -q "$addr" "$rpc_call"; then
+        missing="${missing}${addr}
+"
+    fi
+done
+if [ -n "$missing" ]; then
+    fail 10 "RPC $rpc_call does not register every pipe system_precompiles address. Missing:
+${missing}Register each in register_custom_precompiles (unconditionally, matching the pipe)." \
+        "rg -n 'NATIVE_MINT_PRECOMPILE_ADDR|BLS_PRECOMPILE_ADDR' $rpc_call $pipe_lib"
+fi
+ok 10 "RPC call.rs references every system_precompiles address ident (${addrs[*]})"
 
 echo
 echo "All Gravity invariants passed."

@@ -3,10 +3,13 @@
 use super::{Call, LoadBlock, LoadState, LoadTransaction};
 use crate::{FromEthApiError, FromEvmError};
 use alloy_consensus::{transaction::TxHashRef, BlockHeader};
-use alloy_primitives::B256;
+use alloy_primitives::{B256, U256};
 use alloy_rpc_types_eth::{BlockId, TransactionInfo};
 use futures::Future;
-use reth_chainspec::{is_gravity_system_caller, is_system_tx_gas_exempt, ChainSpecProvider};
+use reth_chainspec::{
+    is_gravity_system_caller, is_system_tx_gas_exempt, ChainSpecProvider, EthChainSpec,
+    GravityHardfork, SYSTEM_CALLER,
+};
 use reth_errors::{ProviderError, RethError};
 use reth_evm::{
     block::BlockExecutor, ConfigureEvm, Database, Evm, EvmEnvFor, EvmFactory, EvmFor,
@@ -18,13 +21,14 @@ use reth_revm::{
     db::{bal::EvmDatabaseError, State},
 };
 use reth_rpc_eth_types::cache::db::StateCacheDb;
-use reth_storage_api::{ProviderBlock, ProviderTx};
+use reth_storage_api::{HeaderProvider, ProviderBlock, ProviderTx};
 use revm::{
     context::{
         result::{ExecutionResult, ResultAndState},
         Block,
     },
-    state::EvmState,
+    context_interface::Transaction,
+    state::{Account, AccountInfo, AccountStatus, EvmState},
     DatabaseCommit,
 };
 use revm_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
@@ -92,12 +96,14 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
         let block_number = evm_env.block_env.number();
         let block_timestamp = evm_env.block_env.timestamp();
         let current_randomness = evm_env.block_env.prevrandao();
+        let for_system_tx = is_gravity_system_caller(tx_env.caller());
         let mut evm = self.evm_config().evm_with_env_and_inspector(db, evm_env, inspector);
         self.register_custom_precompiles(
             &mut evm,
             block_number,
             block_timestamp,
             current_randomness,
+            for_system_tx,
         );
         evm.transact(tx_env).map_err(Self::Error::from_evm_err)
     }
@@ -398,14 +404,14 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
                     evm_block_timestamp.saturating_to::<u64>(),
                 );
 
-                // Classify the first transaction to pick the initial cfg.
+                // Classify the first transaction to pick the initial cfg + precompile set.
                 // If the block is empty post-take we already returned above.
                 let mut txs_iter = block.transactions_recovered().take(max_transactions).peekable();
-                let first_kind_system_exempt = exempt_fork_active &&
-                    txs_iter
-                        .peek()
-                        .map(|tx| is_gravity_system_caller(tx.signer()))
-                        .unwrap_or(false);
+                let first_is_system_caller = txs_iter
+                    .peek()
+                    .map(|tx| is_gravity_system_caller(tx.signer()))
+                    .unwrap_or(false);
+                let first_kind_system_exempt = exempt_fork_active && first_is_system_caller;
 
                 // Build the initial EVM with cfg pre-toggled per the first tx's kind.
                 let mut initial_env = evm_env;
@@ -421,8 +427,9 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
                     evm_block_number,
                     evm_block_timestamp,
                     current_randomness,
+                    first_is_system_caller,
                 );
-                let mut current_kind_system_exempt = first_kind_system_exempt;
+                let mut current_is_system_caller = first_is_system_caller;
 
                 // Protocol invariant pin: the pipe layer pins SYSTEM_CALLER-signed
                 // txs (metadata + DKG/JWK validator txs) to a contiguous block-head
@@ -438,7 +445,7 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
                 let mut results: Vec<R> = Vec::with_capacity(max_transactions);
 
                 while let Some(tx) = txs_iter.next() {
-                    // Per-tx classification + EVM rebuild on transition.
+                    // Per-tx classification + EVM rebuild on SYSTEM_CALLER↔user.
                     let is_system_caller = is_gravity_system_caller(tx.signer());
                     debug_assert!(
                         !(is_system_caller && saw_non_system_caller_tx),
@@ -448,8 +455,10 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
                         saw_non_system_caller_tx = true;
                     }
 
-                    let tx_is_system_exempt = exempt_fork_active && is_system_caller;
-                    if tx_is_system_exempt != current_kind_system_exempt {
+                    // Rebuild even pre-Alpha: mint is system-only and must drop on the
+                    // user boundary (cfg disables may stay false on both sides).
+                    if is_system_caller != current_is_system_caller {
+                        let tx_is_system_exempt = exempt_fork_active && is_system_caller;
                         let (db_taken, mut env_taken) = current_evm.finish();
                         env_taken.cfg_env.disable_base_fee = tx_is_system_exempt;
                         env_taken.cfg_env.disable_balance_check = tx_is_system_exempt;
@@ -463,8 +472,9 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
                             evm_block_number,
                             evm_block_timestamp,
                             current_randomness,
+                            is_system_caller,
                         );
-                        current_kind_system_exempt = tx_is_system_exempt;
+                        current_is_system_caller = is_system_caller;
                     }
 
                     let tx_hash = *tx.tx_hash();
@@ -610,6 +620,62 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
             .map_err(Self::Error::from_eth_err)?
             .apply_pre_execution_changes()
             .map_err(Self::Error::from_eth_err)?;
+        // Gravity Alpha: zero SYSTEM_CALLER.balance on the activation block so
+        // RPC replay from parent state matches the pipe write path
+        // (`system_caller_migration::apply_state_changes_for_block`). Without
+        // this, `trace_block` on the Alpha activation block still sees the
+        // genesis sentinel balance and system-tx gas metering diverges.
+        self.apply_alpha_system_caller_migration(block, db)?;
+        Ok(())
+    }
+
+    /// One-shot Alpha `SYSTEM_CALLER` balance zeroing, gated by
+    /// `transitions_at_timestamp(current, parent)`.
+    ///
+    /// Mirrors the pipe hook: only `balance` is cleared; nonce and code stay so
+    /// EIP-161 does not prune the account. RPC cannot depend on the pipe crate,
+    /// so the same diff is applied here via [`DatabaseCommit`].
+    fn apply_alpha_system_caller_migration(
+        &self,
+        block: &RecoveredBlock<ProviderBlock<Self::Provider>>,
+        db: &mut StateCacheDb,
+    ) -> Result<(), Self::Error> {
+        let chain_spec = self.provider().chain_spec();
+        let current_ts = block.timestamp();
+        let parent_ts = self
+            .provider()
+            .header(&block.parent_hash())
+            .map_err(Self::Error::from_eth_err)?
+            .map(|header| header.timestamp())
+            .unwrap_or(0);
+
+        if !chain_spec
+            .gravity_hardforks()
+            .fork(GravityHardfork::Alpha)
+            .transitions_at_timestamp(current_ts, parent_ts)
+        {
+            return Ok(());
+        }
+
+        // `unwrap_or_default` covers degenerate fixtures that omit SYSTEM_CALLER
+        // from genesis alloc — same as the pipe hook.
+        let prev = revm::Database::basic(db, SYSTEM_CALLER)
+            .map_err(Self::Error::from_eth_err)?
+            .unwrap_or_default();
+        let new_info = AccountInfo {
+            balance: U256::ZERO,
+            nonce: prev.nonce,
+            code_hash: prev.code_hash,
+            code: prev.code,
+            account_id: prev.account_id,
+        };
+
+        let mut account = Account::default();
+        account.info = new_info;
+        account.status = AccountStatus::Touched;
+        let mut state_diff = EvmState::default();
+        state_diff.insert(SYSTEM_CALLER, account);
+        db.commit(state_diff);
         Ok(())
     }
 }

@@ -5,6 +5,7 @@ use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, U256};
 use gravity_precompiles::{
     bls_pop_verify::{create_bls_pop_verify_precompile, BLS_PRECOMPILE_ADDR},
+    mint_token::{create_mint_token_precompile, NATIVE_MINT_PRECOMPILE_ADDR},
     randomness_by_height::{
         create_randomness_by_height_precompile, randomness_by_height_gas_policy_at_block,
         RandomnessByHeightGasPolicy, RandomnessByHeightLookup, RandomnessByHeightProvider,
@@ -111,6 +112,7 @@ where
         block_number: U256,
         block_timestamp: U256,
         current_randomness: Option<B256>,
+        for_system_tx: bool,
     ) where
         EV: Evm<Precompiles = PrecompilesMap>,
     {
@@ -122,6 +124,21 @@ where
         let bls_precompile = create_bls_pop_verify_precompile();
         evm.precompiles_mut().apply_precompile(&BLS_PRECOMPILE_ADDR, move |_| Some(bls_precompile));
 
+        // Mint mirrors pipe `system_precompiles` in `transact_system_txn` only — not
+        // `custom_precompiles_for_ordered_block`. Registering it for user txs would make
+        // a direct EOA CALL halt as unauthorized on RPC while canonical treats the mint
+        // address as an empty account. See #372 / PR review.
+        //
+        // System set stops here (BLS + mint). Randomness is user-executor only on the
+        // pipe; installing it for SYSTEM_CALLER replay would create the same divergence
+        // class if a system tx reached `0x…1625f5002`.
+        if for_system_tx {
+            let mint_precompile = create_mint_token_precompile();
+            evm.precompiles_mut()
+                .apply_precompile(&NATIVE_MINT_PRECOMPILE_ADDR, move |_| Some(mint_precompile));
+            return;
+        }
+
         let Ok(block_number) = u64::try_from(block_number) else { return };
         let Ok(block_timestamp) = u64::try_from(block_timestamp) else { return };
         let chain_spec = self.provider().chain_spec();
@@ -129,10 +146,10 @@ where
             return
         }
 
-        // Randomness-by-height is Alpha-gated to match the pipe's post-Alpha registration
-        // (`pipe-exec-layer-ext-v2/execute/src/lib.rs` post-Alpha branch).
-        // For RPC calls the gas tier is anchored to the EVM block environment being simulated.
-        // This keeps eth_call, estimateGas, and debug tracing aligned with the execution context.
+        // Randomness-by-height: user-tx path only, Alpha-gated to match
+        // `custom_precompiles_for_ordered_block` (pipe post-Alpha branch).
+        // Gas tier is anchored to the EVM block being simulated so eth_call /
+        // estimateGas / debug tracing stay aligned with that execution context.
         let precompile =
             create_randomness_by_height_precompile(Arc::new(HeaderRandomnessProvider::new(
                 self.provider().clone(),
