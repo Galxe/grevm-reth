@@ -49,4 +49,4 @@ tracing.workspace = true
 # get the wrong path, update this when the workflow has been updated
 #
 # See: https://github.com/eira-fransham/crunchy/issues/13
-crunchy = "=0.2.2"
+crunchy = "=0.2.4"
